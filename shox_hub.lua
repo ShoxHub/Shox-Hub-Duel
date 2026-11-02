@@ -19,6 +19,10 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
+-- Prefer the requested Creepster face when the runtime exposes it; fall back safely.
+local SHOX_UI_FONT = Enum.Font.GothamBold
+pcall(function() SHOX_UI_FONT = Enum.Font.Creepster end)
+
 local ShoxIntro = {
     Running = true,
     Letters = {"S", "H", "O", "X", "H", "U", "B"},
@@ -171,7 +175,7 @@ local function shoxIntroPlay()
         local letterScale = shoxIntroMake("UIScale", {Scale = 1}, wrap)
         local label = shoxIntroMake("TextLabel", {
             Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-            Text = character, Font = Enum.Font.GothamBlack, TextSize = 76,
+            Text = character, Font = SHOX_UI_FONT, TextSize = 76,
             TextColor3 = accent, TextTransparency = 1, Active = false,
         }, wrap)
         letters[i] = {w = wrap, us = letterScale, lb = label, x = x, hit = -10, amp = 0, rev = math.huge}
@@ -184,7 +188,7 @@ local function shoxIntroPlay()
     local subtitle = shoxIntroMake("TextLabel", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 80),
         Size = UDim2.fromOffset(376, 22), BackgroundTransparency = 1,
-        Text = "discord.gg/EA7xS26mA9", Font = Enum.Font.GothamBold,
+        Text = "discord.gg/EA7xS26mA9", Font = SHOX_UI_FONT,
         TextSize = 17, TextColor3 = subColor, TextTransparency = 1,
     }, stage)
     local flash = shoxIntroMake("Frame", {
@@ -195,7 +199,7 @@ local function shoxIntroPlay()
         AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 14),
         Size = UDim2.fromOffset(78, 32), BackgroundColor3 = Color3.fromRGB(24, 48, 80),
         Text = "Skip", TextColor3 = Color3.fromRGB(225, 242, 255),
-        Font = Enum.Font.GothamBold, TextSize = 14, AutoButtonColor = false,
+        Font = SHOX_UI_FONT, TextSize = 14, AutoButtonColor = false,
         BorderSizePixel = 0, ZIndex = 10, Active = true,
     }, gui)
     shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
@@ -795,19 +799,19 @@ function CarrySystem:toggleSoftSteal() self:setSoftStealEnabled(not self.softSte
 function CarrySystem:isRunning() return self._heartbeatConn ~= nil end
 function CarrySystem:getCurrentSpeed() return self:getActiveSpeed() end
 
--- ShoxHub V21 test palette: one consistent lime accent. Legacy saved theme
--- names are accepted but normalized to Lime so old configs remain loadable.
-local LIME = Color3.fromRGB(170, 255, 55)
+-- ShoxHub V28 safe stability audit; monochrome palette. Legacy theme names remain loadable,
+-- but every saved theme resolves to the requested black/white appearance.
+local MONO = Color3.fromRGB(245, 245, 245)
 local COLOR_THEMES = {
-    ["Lime"] = LIME,
-    ["Black"] = LIME, ["White"] = LIME, ["Blue"] = LIME,
-    ["Lava"] = LIME, ["Neutral"] = LIME,
+    ["Monochrome"] = MONO,
+    ["Black"] = MONO, ["White"] = MONO,
+    ["Blue"] = MONO, ["Lava"] = MONO, ["Neutral"] = MONO,
 }
 
-currentColorTheme = "Lime"
-selectedColor = LIME
+currentColorTheme = "Monochrome"
+selectedColor = MONO
 local function normalizeShoxTheme(name)
-    return "Lime"
+    return "Monochrome"
 end
 
 function getThemeColor() return selectedColor end
@@ -3158,13 +3162,11 @@ function _G.AmbitiousSafeModeHoldingBrainrot()
             end
         end
     end
+    -- Do not infer carrying from arbitrary model names such as "AnimalSlot"
+    -- or "AnimalPodium"; only trust an explicit carried-state attribute.
     for _, child in ipairs(char:GetChildren()) do
-        if child:IsA("Model") and child:FindFirstChildWhichIsA("BasePart", true) then
-            local n = child.Name:lower()
-            if n:find("brainrot", 1, true) or n:find("animal", 1, true)
-               or child:GetAttribute("IsCarried") == true then
-                return true
-            end
+        if child:IsA("Model") and child:GetAttribute("IsCarried") == true then
+            return true
         end
     end
     return false
@@ -3620,7 +3622,7 @@ do
         lbl.AnchorPoint = Vector2.new(0.5, 0.5)
         lbl.Position = UDim2.new(0.5, 0, 0.5, 0)
         lbl.BackgroundTransparency = 1
-        lbl.Font = Enum.Font.GothamBlack
+        lbl.Font = SHOX_UI_FONT
         lbl.TextScaled = true
         lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
         lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -3928,7 +3930,7 @@ function updateEnemySpeedLabels()
                         tl.Size = UDim2.new(1, 0, 1, 0)
                         tl.BackgroundTransparency = 1
                         tl.TextColor3 = color
-                        tl.Font = Enum.Font.GothamBold
+                        tl.Font = SHOX_UI_FONT
                         tl.TextScaled = true
                         tl.TextStrokeTransparency = 1
                         tl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -4041,7 +4043,10 @@ function startBodyLock()
     if _bodyLockConn then _bodyLockConn:Disconnect() end
     _bodyLockConn = RunService.Heartbeat:Connect(function()
         if not bodyLockEnabled or _blSuppressCount > 0 then return end
-        _bodyLockTick()
+        local ok, err = xpcall(_bodyLockTick, debug.traceback)
+        if not ok then
+            warn("[ShoxHub] Body Lock tick recovered: " .. tostring(err))
+        end
     end)
 end
 
@@ -4138,7 +4143,7 @@ function setupSpeedIndicator(char)
     speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     speedLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     speedLabel.TextStrokeTransparency = 0.08
-    speedLabel.Font = Enum.Font.GothamBlack
+    speedLabel.Font = SHOX_UI_FONT
     speedLabel.TextSize = 18
     speedLabel.TextXAlignment = Enum.TextXAlignment.Center
     speedLabel.ZIndex = 10
@@ -5593,19 +5598,24 @@ end
 function findMedusa()
     local c = LP.Character
     if not c then return nil end
-    for _, t in ipairs(c:GetChildren()) do
-        if t:IsA("Tool") then
-            local n = t.Name:lower()
-            if n:find("medusa") or n:find("head") or n:find("stone") then return t end
-        end
+
+    -- Match Medusa as a standalone word only. Generic "head"/"stone"
+    -- substrings incorrectly selected unrelated tools such as Headless Knight
+    -- and Whetstone.
+    local function isMedusaTool(tool)
+        if not tool or not tool:IsA("Tool") then return false end
+        local name = tool.Name:lower()
+        return name:match("%f[%a]medusa%f[%A]") ~= nil
     end
-    local bp = LP:FindFirstChild("Backpack")
-    if bp then
-        for _, t in ipairs(bp:GetChildren()) do
-            if t:IsA("Tool") then
-                local n = t.Name:lower()
-                if n:find("medusa") or n:find("head") or n:find("stone") then return t end
-            end
+
+    for _, tool in ipairs(c:GetChildren()) do
+        if isMedusaTool(tool) then return tool end
+    end
+
+    local backpack = LP:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if isMedusaTool(tool) then return tool end
         end
     end
     return nil
@@ -5838,6 +5848,7 @@ end
 -- Anti-Lag: nur visuelle Effekte deaktivieren, niemals Spielobjekte verändern/löschen.
 local antiLagOriginalProperties = setmetatable({}, {__mode = "k"})
 local antiLagLightingConn = nil
+local antiLagScanGeneration = 0
 
 local function applyAntiLagDerender(obj)
     pcall(function()
@@ -5875,14 +5886,7 @@ function enableAntiLag()
         settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
     end)
 
-    -- Bestehende Effekte einmalig deaktivieren.
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        applyAntiLagDerender(obj)
-    end
-    for _, obj in ipairs(Lighting:GetDescendants()) do
-        applyAntiLagDerender(obj)
-    end
-
+    -- Subscribe first so new effects are covered while the initial scan yields.
     if antiLagDescConn then antiLagDescConn:Disconnect() end
     antiLagDescConn = workspace.DescendantAdded:Connect(function(obj)
         if antiLagEnabled then applyAntiLagDerender(obj) end
@@ -5892,10 +5896,36 @@ function enableAntiLag()
     antiLagLightingConn = Lighting.DescendantAdded:Connect(function(obj)
         if antiLagEnabled then applyAntiLagDerender(obj) end
     end)
+
+    -- A full GetDescendants pass can hitch badly on large maps. Spread work
+    -- over frames and invalidate an unfinished scan if Anti-Lag is switched off.
+    antiLagScanGeneration = antiLagScanGeneration + 1
+    local scanGeneration = antiLagScanGeneration
+    task.spawn(function()
+        local roots = {workspace, Lighting}
+        for _, root in ipairs(roots) do
+            if not antiLagEnabled or scanGeneration ~= antiLagScanGeneration then return end
+            -- Walk incrementally instead of allocating one huge GetDescendants array.
+            local pending = root:GetChildren()
+            local cursor = 1
+            while cursor <= #pending do
+                if not antiLagEnabled or scanGeneration ~= antiLagScanGeneration then return end
+                local obj = pending[cursor]
+                cursor = cursor + 1
+                applyAntiLagDerender(obj)
+                local children = obj:GetChildren()
+                for _, child in ipairs(children) do
+                    pending[#pending + 1] = child
+                end
+                if cursor % 180 == 0 then task.wait() end
+            end
+        end
+    end)
 end
 
 function disableAntiLag()
     antiLagEnabled = false
+    antiLagScanGeneration = antiLagScanGeneration + 1
     removeAccessoriesEnabled = false
 
     if antiLagDescConn then
@@ -6146,6 +6176,13 @@ function _v4mpClearSky()
 end
 
 function applyCustomSky(mode)
+    -- The Neon Weather and custom-sky systems use different snapshots.
+    -- Restore Neon first, then capture the true baseline for the sky preset.
+    if neonWeatherEnabled then
+        pcall(function() toggleNeonWeather(false) end)
+        neonWeatherEnabled = false
+        _shoxOriginalLighting = nil
+    end
     _shoxCaptureLighting()
     _v4mpClearSky()
     local preset = SKY_PRESETS[mode]
@@ -6231,11 +6268,21 @@ local function applyNeonWeather()
 end
 
 function toggleNeonWeather(state)
+    local requestedState
     if state == nil then
-        neonWeatherEnabled = not neonWeatherEnabled
+        requestedState = not neonWeatherEnabled
     else
-        neonWeatherEnabled = state
+        requestedState = state == true
     end
+
+    -- These effects are mutually exclusive so each system can restore the
+    -- original Lighting snapshot without overwriting the other effect.
+    if requestedState and skyTheme ~= "Off" then
+        pcall(function() applyCustomSky("Off") end)
+        _originalLighting = nil
+    end
+
+    neonWeatherEnabled = requestedState
     applyNeonWeather()
     if setNeonWeatherVisual then setNeonWeatherVisual(neonWeatherEnabled) end
 end
@@ -6304,6 +6351,24 @@ local function drag(f)
         if uiLocked then return end
         if _isDraggingButton then return end
         if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            -- A click on a child control should remain a click, not start a panel drag.
+            local guiService = game:GetService("GuiService")
+            local ok, underPointer = pcall(function()
+                return guiService:GetGuiObjectsAtPosition(i.Position.X, i.Position.Y)
+            end)
+            if ok and underPointer then
+                for _, target in ipairs(underPointer) do
+                    if target ~= f and target:IsDescendantOf(f) then
+                        local current = target
+                        while current and current ~= f do
+                            if current:IsA("GuiButton") or current:IsA("TextBox") then
+                                return
+                            end
+                            current = current.Parent
+                        end
+                    end
+                end
+            end
             dn = true; ds = i.Position; sp = f.Position
             if endConn then endConn:Disconnect() end
             endConn = i.Changed:Connect(function()
@@ -7164,8 +7229,8 @@ function loadAllSettings()
             end)
         end
     end
-    if data.bodyLockRange then
-        bodyLockRange = data.bodyLockRange
+    if data.bodyLockRange ~= nil then
+        bodyLockRange = readNumber(data.bodyLockRange, bodyLockRange or 20, 5, 200)
         if bodyLockRangeBox then bodyLockRangeBox.Text = tostring(bodyLockRange) end
     end
     dropMode = data.dropMode or 1
@@ -7178,8 +7243,10 @@ function loadAllSettings()
     stretchFOV = data.stretchFOV or 120
     BAT_AIMBOT_SPEED = data.batAimbotSpeed or BAT_AIMBOT_SPEED
     floatingButtonScale = data.floatingButtonScale or 1
-    if data.outfitIndex and data.outfitIndex >= 1 and data.outfitIndex <= #OUTFITS then
-        currentOutfitIndex = data.outfitIndex
+    local savedOutfitIndex = readNumber(data.outfitIndex, 0, 0, #OUTFITS)
+    savedOutfitIndex = math.floor(savedOutfitIndex)
+    if savedOutfitIndex >= 1 and savedOutfitIndex <= #OUTFITS then
+        currentOutfitIndex = savedOutfitIndex
         task.defer(function()
             pcall(function() applyOutfitByIndex(currentOutfitIndex) end)
             if outfitSelectorLabel then
@@ -7422,7 +7489,7 @@ function resetFloatingPositions()
         instaResetFloatingPos = nil
     end
     if pbFrame then
-        pbFrame.Position = UDim2.new(0.5, -160, 1, -60)
+        pbFrame.Position = UDim2.new(0.5, -130, 1, -60)
         savedProgressBarPos = nil
     end
     savedMobilePanelPos = nil
@@ -7823,9 +7890,9 @@ do
 end
 
 function buildGui()
-    local SILVER = Color3.fromRGB(170, 255, 55)
-    local SILVER_DARK = Color3.fromRGB(135, 165, 105)
-    local SILVER_LIGHT = Color3.fromRGB(220, 255, 190)
+    local SILVER = Color3.fromRGB(245, 245, 245)
+    local SILVER_DARK = Color3.fromRGB(125, 125, 125)
+    local SILVER_LIGHT = Color3.fromRGB(255, 255, 255)
     local BG = Color3.fromRGB(0,0,0)
     local BG2 = Color3.fromRGB(10,10,10)
     local ROW_BG = Color3.fromRGB(10,10,10)
@@ -7896,7 +7963,7 @@ function buildGui()
     titleImage.BackgroundTransparency = 1
     titleImage.Text = "SHOX"
     titleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
-    titleImage.Font = Enum.Font.GothamBlack
+    titleImage.Font = SHOX_UI_FONT
     titleImage.TextScaled = true
     titleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     titleImage.TextStrokeTransparency = 0.12
@@ -7913,7 +7980,7 @@ function buildGui()
     closeBtn.BorderSizePixel = 0
     closeBtn.Text = "−"
     closeBtn.TextColor3 = WHITE
-    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.Font = SHOX_UI_FONT
     closeBtn.TextSize = 26
     closeBtn.AutoButtonColor = false
     closeBtn.ZIndex = 200
@@ -7935,7 +8002,7 @@ function buildGui()
     miniBtn.ClipsDescendants = true
     miniBtn.Text = ""
     miniBtn.TextColor3 = Color3.fromRGB(210, 210, 220)
-    miniBtn.Font = Enum.Font.SciFi
+    miniBtn.Font = SHOX_UI_FONT
     miniBtn.TextSize = 16
     miniBtn.ZIndex = 20
     miniBtn.Visible = false
@@ -7949,7 +8016,7 @@ function buildGui()
     miniTitleImage.BackgroundTransparency = 1
     miniTitleImage.Text = "SHOX"
     miniTitleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
-    miniTitleImage.Font = Enum.Font.GothamBlack
+    miniTitleImage.Font = SHOX_UI_FONT
     miniTitleImage.TextScaled = true
     miniTitleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     miniTitleImage.TextStrokeTransparency = 0.12
@@ -8061,7 +8128,7 @@ function buildGui()
         btn.BorderSizePixel = 0
         btn.Text = name
         btn.TextColor3 = TAB_INACT
-        btn.Font = Enum.Font.GothamBold
+        btn.Font = SHOX_UI_FONT
         btn.TextSize = 12
         btn.AutoButtonColor = false
         btn.ZIndex = 11
@@ -8140,7 +8207,7 @@ function buildGui()
         l.BackgroundTransparency = 1
         l.Text = txt:upper()
         l.TextColor3 = Color3.fromRGB(230, 230, 235)
-        l.Font = Enum.Font.SciFi
+        l.Font = SHOX_UI_FONT
         l.TextSize = 15
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextStrokeColor3 = Color3.fromRGB(60,60,60)
@@ -8185,7 +8252,7 @@ function buildGui()
         l.BackgroundTransparency = 1
         l.Text = txt
         l.TextColor3 = Color3.fromRGB(235, 235, 240)
-        l.Font = Enum.Font.GothamBold
+        l.Font = SHOX_UI_FONT
         l.TextSize = 11
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextTruncate = Enum.TextTruncate.AtEnd
@@ -8292,7 +8359,7 @@ function buildGui()
         valLabel.BackgroundTransparency = 1
         valLabel.Text = tostring(default)
         valLabel.TextColor3 = WHITE
-        valLabel.Font = Enum.Font.GothamBold
+        valLabel.Font = SHOX_UI_FONT
         valLabel.TextSize = 11
         valLabel.TextXAlignment = Enum.TextXAlignment.Right
         valLabel.ZIndex = 9
@@ -8403,7 +8470,7 @@ function buildGui()
         tb.BorderSizePixel = 0
         tb.Text = tostring(default)
         tb.TextColor3 = WHITE
-        tb.Font = Enum.Font.GothamBold
+        tb.Font = SHOX_UI_FONT
         tb.TextSize = 11
         tb.ClearTextOnFocus = false
         tb.ZIndex = 8
@@ -8430,7 +8497,7 @@ function buildGui()
         local function getLabel() return (kbEntry.gp and kbEntry.gp.Name) or (kbEntry.kb and kbEntry.kb.Name) or "None" end
         btn.Text = getLabel()
         btn.TextColor3 = WHITE
-        btn.Font = Enum.Font.GothamBold
+        btn.Font = SHOX_UI_FONT
         btn.TextSize = 9
         btn.ZIndex = 8
         btn.AutoButtonColor = false
@@ -8486,7 +8553,7 @@ function buildGui()
         label.BackgroundTransparency = 1
         label.Text = tostring(defaultText)
         label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.Font = Enum.Font.GothamBold
+        label.Font = SHOX_UI_FONT
         label.TextSize = 12
         label.TextXAlignment = Enum.TextXAlignment.Left
         label.TextTruncate = Enum.TextTruncate.AtEnd
@@ -8737,7 +8804,7 @@ function buildGui()
         actLbl.BackgroundTransparency = 1
         actLbl.Text = "ACTIVATE"
         actLbl.TextColor3 = Color3.fromRGB(230, 230, 235)
-        actLbl.Font = Enum.Font.GothamBold
+        actLbl.Font = SHOX_UI_FONT
         actLbl.TextSize = 9
         actLbl.TextXAlignment = Enum.TextXAlignment.Right
         actLbl.ZIndex = 8
@@ -9151,7 +9218,7 @@ function buildGui()
         previewPlaceholder.BackgroundTransparency = 1
         previewPlaceholder.Text = "OFF"
         previewPlaceholder.TextColor3 = Color3.fromRGB(160, 160, 170)
-        previewPlaceholder.Font = Enum.Font.GothamBlack
+        previewPlaceholder.Font = SHOX_UI_FONT
         previewPlaceholder.TextSize = 12
         previewPlaceholder.ZIndex = 10
 
@@ -9233,7 +9300,7 @@ function buildGui()
         info.BackgroundTransparency = 1
         info.Size = UDim2.new(0, 175, 1, 0)
         info.Position = UDim2.new(1, -183, 0, 0)
-        info.Font = Enum.Font.Gotham
+        info.Font = SHOX_UI_FONT
         info.TextSize = 11
         info.TextXAlignment = Enum.TextXAlignment.Right
         info.TextColor3 = Color3.fromRGB(170, 205, 235)
@@ -9363,7 +9430,7 @@ function buildGui()
             lbl.BackgroundTransparency = 1
             lbl.Text = item.label
             lbl.TextColor3 = Color3.fromRGB(235, 235, 240)
-            lbl.Font = Enum.Font.GothamBold
+            lbl.Font = SHOX_UI_FONT
             lbl.TextSize = 11
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             lbl.Position = UDim2.new(0, 12, 0, 0)
@@ -9418,7 +9485,7 @@ function buildGui()
         arrowBtn.BackgroundColor3 = Color3.fromRGB(15,15,15)
         arrowBtn.Text = "▼"
         arrowBtn.TextColor3 = Color3.fromRGB(220,220,230)
-        arrowBtn.Font = Enum.Font.GothamBold
+        arrowBtn.Font = SHOX_UI_FONT
         arrowBtn.TextSize = 14
         arrowBtn.AutoButtonColor = false
         arrowBtn.ZIndex = 8
@@ -9438,11 +9505,11 @@ function buildGui()
         info.BackgroundTransparency = 1
         info.Position = UDim2.new(0, 10, 0, 0)
         info.Size = UDim2.new(1, -20, 1, 0)
-        info.Font = Enum.Font.GothamSemibold
+        info.Font = SHOX_UI_FONT
         info.TextSize = 12
         info.TextXAlignment = Enum.TextXAlignment.Left
-        info.TextColor3 = Color3.fromRGB(170, 255, 55)
-        info.Text = "LIME  •  FIXED ACCENT"
+        info.TextColor3 = Color3.fromRGB(245, 245, 245)
+        info.Text = "BLACK & WHITE  •  FIXED ACCENT"
         info.ZIndex = 8
     end
 
@@ -9464,12 +9531,12 @@ function buildGui()
         local saveGrad = Instance.new("UIGradient", saveBtn)
         saveGrad.Rotation = 90
         saveGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(170, 255, 55)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(70, 115, 25)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(245, 245, 245)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(95, 95, 95)),
         })
 
         local saveStroke = Instance.new("UIStroke", saveBtn)
-        saveStroke.Color = Color3.fromRGB(170, 255, 55)
+        saveStroke.Color = Color3.fromRGB(220, 220, 220)
         saveStroke.Thickness = 1.5
         saveStroke.Transparency = 0.35
 
@@ -9478,7 +9545,7 @@ function buildGui()
         saveLbl.BackgroundTransparency = 1
         saveLbl.Text = "SAVE CONFIG"
         saveLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-        saveLbl.Font = Enum.Font.GothamBlack
+        saveLbl.Font = SHOX_UI_FONT
         saveLbl.TextSize = 13
         saveLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         saveLbl.TextStrokeTransparency = 0.55
@@ -9528,7 +9595,7 @@ function buildGui()
         })
 
         local resetStroke = Instance.new("UIStroke", resetPosBtn)
-        resetStroke.Color = Color3.fromRGB(135, 185, 85)
+        resetStroke.Color = Color3.fromRGB(220, 220, 220)
         resetStroke.Thickness = 1.5
         resetStroke.Transparency = 0.35
 
@@ -9537,7 +9604,7 @@ function buildGui()
         resetLbl.BackgroundTransparency = 1
         resetLbl.Text = "RESET POSITIONS"
         resetLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-        resetLbl.Font = Enum.Font.GothamBlack
+        resetLbl.Font = SHOX_UI_FONT
         resetLbl.TextSize = 13
         resetLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         resetLbl.TextStrokeTransparency = 0.55
@@ -9604,7 +9671,7 @@ function buildGui()
         delLbl.BackgroundTransparency = 1
         delLbl.Text = "DELETE SETTINGS"
         delLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-        delLbl.Font = Enum.Font.GothamBlack
+        delLbl.Font = SHOX_UI_FONT
         delLbl.TextSize = 13
         delLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         delLbl.TextStrokeTransparency = 0.55
@@ -9690,8 +9757,8 @@ function buildGui()
     spacer.ZIndex = 7
 
     pbFrame = Instance.new("Frame", gui)
-    pbFrame.Size = UDim2.new(0, 320, 0, 70)
-    pbFrame.Position = UDim2.new(0.5, -160, 1, -60)
+    pbFrame.Size = UDim2.new(0, 260, 0, 64)
+    pbFrame.Position = UDim2.new(0.5, -130, 1, -60)
     pbFrame.BackgroundColor3 = Color3.fromRGB(10,10,10)
     pbFrame.BackgroundTransparency = 0
     pbFrame.BorderSizePixel = 0
@@ -9719,7 +9786,7 @@ function buildGui()
     if savedProgressBarPos then
         pbFrame.Position = UDim2.new(
             savedProgressBarPos.XScale or 0.5,
-            savedProgressBarPos.XOffset or -160,
+            savedProgressBarPos.XOffset or -130,
             savedProgressBarPos.YScale or 1,
             savedProgressBarPos.YOffset or -60
         )
@@ -9735,7 +9802,7 @@ function buildGui()
     fpsNeon.BackgroundTransparency = 1
     fpsNeon.Text = "--FPS · --ms"
     fpsNeon.TextColor3 = Color3.fromRGB(210, 210, 220)
-    fpsNeon.Font = Enum.Font.SciFi
+    fpsNeon.Font = SHOX_UI_FONT
     fpsNeon.TextSize = 11
     fpsNeon.TextXAlignment = Enum.TextXAlignment.Left
     fpsNeon.TextStrokeTransparency = 1
@@ -9780,7 +9847,7 @@ function buildGui()
     progressPct.BackgroundTransparency = 1
     progressPct.Text = "0%"
     progressPct.TextColor3 = Color3.fromRGB(255,255,255)
-    progressPct.Font = Enum.Font.SciFi
+    progressPct.Font = SHOX_UI_FONT
     progressPct.TextSize = 10
     progressPct.TextStrokeColor3 = Color3.fromRGB(0,0,0)
     progressPct.TextStrokeTransparency = 0.3
@@ -9917,7 +9984,7 @@ function createMobilePanel()
         label.BackgroundTransparency = 1
         label.Text = text
         label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.Font = Enum.Font.GothamBlack
+        label.Font = SHOX_UI_FONT
         label.TextSize = 10
         label.TextWrapped = true
         label.ZIndex = 11
@@ -10201,7 +10268,7 @@ function createTpBatFloatingButton()
     label.BackgroundTransparency = 1
     label.Text = "TP\nBAT"
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = Enum.Font.GothamBlack
+    label.Font = SHOX_UI_FONT
     label.TextSize = 11
     label.TextWrapped = true
     label.ZIndex = 21
@@ -10303,7 +10370,7 @@ function createBatV2FloatingButton()
     label.BackgroundTransparency = 1
     label.Text = "BAT\nBYPASS"
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = Enum.Font.GothamBlack
+    label.Font = SHOX_UI_FONT
     label.TextSize = 10
     label.TextWrapped = true
     label.ZIndex = 21
@@ -10403,7 +10470,7 @@ function createInstaResetFloatingButton()
     label.BackgroundTransparency = 1
     label.Text = "INSTA\nRESET"
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = Enum.Font.GothamBlack
+    label.Font = SHOX_UI_FONT
     label.TextSize = 11
     label.TextWrapped = true
     label.ZIndex = 21
@@ -10760,7 +10827,7 @@ function updateUIFromLoaded()
     if savedProgressBarPos and pbFrame then
         pbFrame.Position = UDim2.new(
             savedProgressBarPos.XScale or 0.5,
-            savedProgressBarPos.XOffset or -160,
+            savedProgressBarPos.XOffset or -130,
             savedProgressBarPos.YScale or 1,
             savedProgressBarPos.YOffset or -60
         )
@@ -11084,7 +11151,7 @@ RunService.Heartbeat:Connect(function()
         ShoxHubLabel.Size = UDim2.new(1, -16, 1, 0)
         ShoxHubLabel.Position = UDim2.new(0, 8, 0, 0)
         ShoxHubLabel.BackgroundTransparency = 1
-        ShoxHubLabel.Font = Enum.Font.GothamBlack
+        ShoxHubLabel.Font = SHOX_UI_FONT
         ShoxHubLabel.TextSize = 14
         ShoxHubLabel.TextStrokeTransparency = .18
         ShoxHubLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -11109,7 +11176,7 @@ RunService.Heartbeat:Connect(function()
     gui.Enabled = true
     local ShoxHubFinished = ShoxHubProgress >= 1
     label.Text = ShoxHubFinished and "STEAL" or "DONT STEAL"
-    label.TextColor3 = ShoxHubFinished and Color3.fromRGB(85, 255, 125) or Color3.fromRGB(255, 75, 85)
+    label.TextColor3 = ShoxHubFinished and Color3.fromRGB(245, 245, 245) or Color3.fromRGB(180, 180, 180)
     fill.Size = UDim2.new(ShoxHubProgress, 0, 1, 0)
 end)
 
@@ -11281,7 +11348,7 @@ local LastPosMarker = (function()
             label.TextStrokeColor3       = COLOR_TEXT_STROKE
             label.TextStrokeTransparency = 0.25
             label.TextSize               = 11
-            label.Font                   = Enum.Font.GothamMedium
+            label.Font                   = SHOX_UI_FONT
             label.Parent                 = bb
 
             state.marker = marker
