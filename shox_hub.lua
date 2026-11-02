@@ -409,7 +409,7 @@ local function waitForCharReady(char, timeout)
 end
 
 NS = 60
-CS = 29
+CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
@@ -466,9 +466,8 @@ function CarrySystem:isCarrying()
     self._lastCarryCheck = now
     local char = LP.Character
     if not char then self._isCarrying = false; return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    local ws = hum and hum.WalkSpeed or 16
-    local bySpeed = (ws < 25 and ws > 0)
+    -- Carry state is detected only from explicit game attributes/values.
+    -- WalkSpeed is not a reliable carrying signal and caused false positives.
     local byAttr = false
     local ok, v = pcall(function() return LP:GetAttribute("Stealing") end)
     if ok and v == true then byAttr = true end
@@ -486,7 +485,7 @@ function CarrySystem:isCarrying()
             end
         end
     end
-    self._isCarrying = bySpeed or byAttr
+    self._isCarrying = byAttr
     return self._isCarrying
 end
 
@@ -634,6 +633,26 @@ function CarrySystem:updateMovement(dt)
     local hrp = char:FindFirstChild("HumanoidRootPart")
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
+
+    -- Only one system may write movement physics at a time.
+    -- Auto Left/Right and the combat controllers own velocity while active.
+    local batBypass = _G.SnowVS and _G.SnowVS.BatBypass
+    local externallyControlled =
+        autoLeftEnabled == true or autoRightEnabled == true
+        or autoBatEnabled == true or autoBatV2Enabled == true
+        or batDesyncTpEnabled == true or dropActive == true
+        or (batBypass and batBypass.Enabled == true)
+    if externallyControlled then
+        local lv = self._lvBoost
+        if lv then
+            pcall(function()
+                lv.PlaneVelocity = Vector2.zero
+                lv.Enabled = false
+            end)
+        end
+        self._blockedTime = 0
+        return
+    end
 
     local speed = self:getActiveSpeed()
     local moveDir = hum.MoveDirection
@@ -2169,14 +2188,8 @@ function _G.AmbitiousStopNormalInfJumpHoldState()
 end
 
 UIS.JumpRequest:Connect(function()
-    -- Preserve Roblox's normal jump even when the custom jump feature is disabled.
-    local character = LP.Character
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if humanoid and humanoid.Health > 0 then
-        pcall(function()
-            humanoid.Jump = true
-        end)
-    end
+    -- Roblox handles the native jump. Only add the optional boost here;
+    -- never write Humanoid.Jump from a second competing input handler.
     if infJumpEnabled and infJumpMode ~= "MANUAL" then
         _G.AmbitiousApplyNormalInfJumpBoost(50)
     end
@@ -2222,11 +2235,7 @@ function _G.AmbitiousHookNormalInfMobileJumpButton(obj)
     S.hooked[obj] = true
     -- Activated fires reliably for Roblox's built-in mobile jump button.
     obj.Activated:Connect(function()
-        local character = LP.Character
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if humanoid and humanoid.Health > 0 then
-            pcall(function() humanoid.Jump = true end)
-        end
+        -- Do not take over Roblox's built-in jump action.
         if infJumpEnabled and infJumpMode ~= "MANUAL" then
             _G.AmbitiousApplyNormalInfJumpBoost(50)
         end
@@ -2300,9 +2309,7 @@ function _G.setInfJumpInternal(on)
     infJumpEnabled = on and true or false
     if not infJumpEnabled then
         _G.AmbitiousStopNormalInfJumpHoldState()
-        local ch = LP.Character
-        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-        if hrp then pcall(function() hrp.Velocity = _V3zero end) end
+        -- Disabling the optional boost must not cancel native jump/fall momentum.
     end
 end
 
@@ -2312,6 +2319,43 @@ InfiniteJump = {
     isRunning = function() return infJumpEnabled == true end,
     setJumpPower = function() end,
 }
+
+-- Restore Roblox's native player controls after ShoxHub initializes.
+-- This does not replace the native mobile JumpButton or synthesize jump input.
+local function _shoxRestoreNativeJumpControls(character)
+    task.defer(function()
+        pcall(function()
+            local playerScripts = LP:FindFirstChild("PlayerScripts")
+            local playerModule = playerScripts and playerScripts:FindFirstChild("PlayerModule")
+            if playerModule then
+                local controlModuleScript = playerModule:FindFirstChild("ControlModule")
+                if controlModuleScript then
+                    local controlModule = require(controlModuleScript)
+                    if controlModule and type(controlModule.Enable) == "function" then
+                        controlModule:Enable()
+                    end
+                end
+            end
+        end)
+
+        local char = character or LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum and hum.Parent and hum.Health > 0 then
+            pcall(function()
+                hum:SetStateEnabled(Enum.HumanoidStateType.Jumping, true)
+            end)
+            pcall(function()
+                hum:SetStateEnabled(Enum.HumanoidStateType.Landed, true)
+            end)
+        end
+    end)
+end
+
+_shoxRestoreNativeJumpControls(LP.Character)
+LP.CharacterAdded:Connect(function(character)
+    task.wait(0.25)
+    _shoxRestoreNativeJumpControls(character)
+end)
 
 local function getCharParts()
     local char = LP.Character
@@ -4178,13 +4222,38 @@ function toggleLaggerCycle()
     resetMovementState()
 end
 
+local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
+    if not root or not root.Parent then return end
+    local flat = _V3new(direction.X, 0, direction.Z)
+    if flat.Magnitude < 0.001 then return end
+
+    -- Cap Auto Left/Right at 30 studs/s and smooth acceleration by elapsed time.
+    local speed = math.clamp(tonumber(requestedSpeed) or 16, 1, 30)
+    local current = root.AssemblyLinearVelocity
+    local desiredX = flat.Unit.X * speed
+    local desiredZ = flat.Unit.Z * speed
+    local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
+    local alpha = 1 - math.exp(-safeDt * 12)
+
+    root.AssemblyLinearVelocity = _V3new(
+        current.X + (desiredX - current.X) * alpha,
+        current.Y,
+        current.Z + (desiredZ - current.Z) * alpha
+    )
+end
+
 function stopAutoLeft()
     if alConn then alConn:Disconnect(); alConn = nil end
     alPhase = 1
     local char = LP.Character
     if char then
         local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
         if hum then hum:Move(_V3zero, false) end
+        if root then
+            local velocity = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = _V3new(0, velocity.Y, 0)
+        end
     end
     if autoLeftSetVisual then autoLeftSetVisual(false) end
     if mobSetAutoLeft then mobSetAutoLeft(false) end
@@ -4203,11 +4272,12 @@ function startAutoLeft()
         if autoRightSetVisual then autoRightSetVisual(false) end
         if mobSetAutoRight then mobSetAutoRight(false) end
     end
+    if dropActive then stopDropBrainrot() end
     disableAllAimbots()
     _suppressBodyLock()
     if alConn then alConn:Disconnect() end
     alPhase = 1
-    alConn = RunService.Heartbeat:Connect(function()
+    alConn = RunService.Heartbeat:Connect(function(dt)
         if not autoLeftEnabled then return end
         local char = LP.Character
         if not char then return end
@@ -4220,20 +4290,23 @@ function startAutoLeft()
             if (tgt - root.Position).Magnitude < 1 then
                 alPhase = 2
                 local d = AP.L2 - root.Position
-                local mv = _V3new(d.X, 0, d.Z).Unit
+                local mv = _V3new(d.X, 0, d.Z)
+                if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
                 hum:Move(mv, false)
-                root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+                applyAutoPathVelocity(root, mv, spd, dt)
                 return
             end
             local d = AP.L1 - root.Position
-            local mv = _V3new(d.X, 0, d.Z).Unit
+            local mv = _V3new(d.X, 0, d.Z)
+            if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+            applyAutoPathVelocity(root, mv, spd, dt)
         elseif alPhase == 2 then
             local tgt = _V3new(AP.L2.X, root.Position.Y, AP.L2.Z)
             if (tgt - root.Position).Magnitude < 1 then
                 hum:Move(_V3zero, false)
-                root.AssemblyLinearVelocity = _V3zero
+                local currentVelocity = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
                 autoLeftEnabled = false
                 if alConn then alConn:Disconnect(); alConn = nil end
                 alPhase = 1
@@ -4247,9 +4320,10 @@ function startAutoLeft()
                 return
             end
             local d = AP.L2 - root.Position
-            local mv = _V3new(d.X, 0, d.Z).Unit
+            local mv = _V3new(d.X, 0, d.Z)
+            if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+            applyAutoPathVelocity(root, mv, spd, dt)
         end
     end)
 end
@@ -4260,7 +4334,12 @@ function stopAutoRight()
     local char = LP.Character
     if char then
         local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
         if hum then hum:Move(_V3zero, false) end
+        if root then
+            local velocity = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = _V3new(0, velocity.Y, 0)
+        end
     end
     if autoRightSetVisual then autoRightSetVisual(false) end
     if mobSetAutoRight then mobSetAutoRight(false) end
@@ -4279,11 +4358,12 @@ function startAutoRight()
         if autoLeftSetVisual then autoLeftSetVisual(false) end
         if mobSetAutoLeft then mobSetAutoLeft(false) end
     end
+    if dropActive then stopDropBrainrot() end
     disableAllAimbots()
     _suppressBodyLock()
     if arConn then arConn:Disconnect() end
     arPhase = 1
-    arConn = RunService.Heartbeat:Connect(function()
+    arConn = RunService.Heartbeat:Connect(function(dt)
         if not autoRightEnabled then return end
         local char = LP.Character
         if not char then return end
@@ -4296,20 +4376,23 @@ function startAutoRight()
             if (tgt - root.Position).Magnitude < 1 then
                 arPhase = 2
                 local d = AP.R2 - root.Position
-                local mv = _V3new(d.X, 0, d.Z).Unit
+                local mv = _V3new(d.X, 0, d.Z)
+                if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
                 hum:Move(mv, false)
-                root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+                applyAutoPathVelocity(root, mv, spd, dt)
                 return
             end
             local d = AP.R1 - root.Position
-            local mv = _V3new(d.X, 0, d.Z).Unit
+            local mv = _V3new(d.X, 0, d.Z)
+            if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+            applyAutoPathVelocity(root, mv, spd, dt)
         elseif arPhase == 2 then
             local tgt = _V3new(AP.R2.X, root.Position.Y, AP.R2.Z)
             if (tgt - root.Position).Magnitude < 1 then
                 hum:Move(_V3zero, false)
-                root.AssemblyLinearVelocity = _V3zero
+                local currentVelocity = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
                 autoRightEnabled = false
                 if arConn then arConn:Disconnect(); arConn = nil end
                 arPhase = 1
@@ -4323,9 +4406,10 @@ function startAutoRight()
                 return
             end
             local d = AP.R2 - root.Position
-            local mv = _V3new(d.X, 0, d.Z).Unit
+            local mv = _V3new(d.X, 0, d.Z)
+            if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
+            applyAutoPathVelocity(root, mv, spd, dt)
         end
     end)
 end
@@ -4407,7 +4491,7 @@ function startAimbotAdapt()
         if _prevAutoRotate == nil then _prevAutoRotate = hum0.AutoRotate end
         hum0.AutoRotate = false
     end
-    _aimbotConn = RunService.RenderStepped:Connect(function()
+    _aimbotConn = RunService.RenderStepped:Connect(function(dt)
         if not autoBatEnabled then return end
         local char = LP.Character
         if not char then return end
@@ -4430,10 +4514,19 @@ function startAimbotAdapt()
         if flatDir.Magnitude > 0 then flatDir = flatDir.Unit else flatDir = _V3new(0,0,0) end
         local desiredHeight = targetPos.Y + 3.7
         local yVel = (desiredHeight - myPos.Y) * 19.5 + targetVel.Y * 0.8
-        if hum.FloorMaterial ~= Enum.Material.Air then yVel = math.max(yVel, 13) end
-        yVel = _clamp(yVel, -70, 110)
+        if hum.FloorMaterial ~= Enum.Material.Air then yVel = math.max(yVel, 0) end
+        yVel = _clamp(yVel, -35, 45)
         local desiredVel = _V3new(flatDir.X * BAT_AIMBOT_SPEED, yVel, flatDir.Z * BAT_AIMBOT_SPEED)
-        root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, 0.8)
+        local currentVelocity = root.AssemblyLinearVelocity
+        local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
+        local alpha = 1 - math.exp(-safeDt * 10)
+        local nextVelocity = currentVelocity:Lerp(desiredVel, alpha)
+        local velocityDelta = nextVelocity - currentVelocity
+        local maxDelta = 180 * safeDt
+        if velocityDelta.Magnitude > maxDelta then
+            nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
+        end
+        root.AssemblyLinearVelocity = nextVelocity
         local speed3 = targetVel.Magnitude
         local predictTime = _clamp(speed3 / 150, 0.05, 0.2)
         local predictedPos = targetPos + targetVel * predictTime
@@ -4605,6 +4698,18 @@ local function bbNearestTarget(root)
             end
         end
     end
+    local current = BB.Z and BB.Z.targetPlayer
+    if current and current ~= LP and current.Character then
+        local currentChar = current.Character
+        local currentRoot = currentChar:FindFirstChild("HumanoidRootPart")
+        local currentHumanoid = currentChar:FindFirstChildOfClass("Humanoid")
+        if currentRoot and currentHumanoid and currentHumanoid.Health > 0 then
+            local currentDistance = (root.Position - currentRoot.Position).Magnitude
+            if currentDistance <= nearestDistance * 1.15 + 2 then
+                return current
+            end
+        end
+    end
     return nearest
 end
 
@@ -4742,8 +4847,9 @@ function BB.Start()
             end
             bbPushHistory(Z.accelerationHistory, (rawVelocity - Z.targetVelocity) / safeDt, 4)
             bbPushHistory(Z.velocityHistory,     rawVelocity, 8)
-            Z.targetVelocity   = rawVelocity
-            Z.smoothedVelocity = Z.smoothedVelocity:Lerp(rawVelocity, ZCFG.VELOCITY_SMOOTHING)
+            Z.targetVelocity = rawVelocity
+            local velocityAlpha = 1 - math.exp(-safeDt * 12)
+            Z.smoothedVelocity = Z.smoothedVelocity:Lerp(rawVelocity, velocityAlpha)
         end
         Z.lastTargetPos = targetPos
 
@@ -4804,10 +4910,24 @@ function BB.Start()
             Z.lastActivationTime = tick()
         end
 
+        local currentVelocity = root.AssemblyLinearVelocity
         if toTarget.Magnitude > ZCFG.MIN_FOLLOW_DISTANCE then
-            root.AssemblyLinearVelocity = toTarget.Unit * ZCFG.FOLLOW_SPEED
+            local followSpeed = math.clamp(tonumber(ZCFG.FOLLOW_SPEED) or 30, 1, 80)
+            local desiredVelocity = toTarget.Unit * followSpeed
+            local moveAlpha = 1 - math.exp(-safeDt * 10)
+            local nextVelocity = currentVelocity:Lerp(desiredVelocity, moveAlpha)
+            local velocityDelta = nextVelocity - currentVelocity
+            local maxDelta = 180 * safeDt
+            if velocityDelta.Magnitude > maxDelta then
+                nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
+            end
+            root.AssemblyLinearVelocity = nextVelocity
         else
-            root.AssemblyLinearVelocity = Vector3.new(0, root.AssemblyLinearVelocity.Y * 0.5, 0)
+            root.AssemblyLinearVelocity = Vector3.new(
+                currentVelocity.X * 0.5,
+                currentVelocity.Y,
+                currentVelocity.Z * 0.5
+            )
         end
     end)
 end
@@ -5547,7 +5667,7 @@ function stopMedusaCounter()
 end
 
 local DROP_ASCEND_DURATION = 0.22
-local DROP_ASCEND_SPEED = 160
+local DROP_ASCEND_SPEED = 60
 local _dropConn = nil
 
 function stopDropBrainrot()
@@ -5644,7 +5764,12 @@ function runDropBrainrot()
                 if not r then break end
                 local vel = r.AssemblyLinearVelocity
                 vel = _V3new(0, vel.Y, 0)
-                r.AssemblyLinearVelocity = vel * 10000 + _V3new(0, 10000, 0)
+                -- The former 10,000-stud/s impulse caused severe server correction/lagback.
+                r.AssemblyLinearVelocity = _V3new(
+                    vel.X,
+                    math.clamp(vel.Y + 60, -60, 60),
+                    vel.Z
+                )
                 RunService.RenderStepped:Wait()
                 if r and r.Parent then r.AssemblyLinearVelocity = vel end
                 RunService.Stepped:Wait()
@@ -5716,166 +5841,86 @@ function executeDropWithToggle(setVisual)
     end)
 end
 
+-- Anti-Lag: nur visuelle Effekte deaktivieren, niemals Spielobjekte verändern/löschen.
 local antiLagOriginalProperties = setmetatable({}, {__mode = "k"})
+local antiLagLightingConn = nil
 
 local function applyAntiLagDerender(obj)
     pcall(function()
-        if obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
-        if obj:IsA("Sky") or obj:IsA("Atmosphere") or obj:IsA("Clouds") then return end
-        if skyTheme ~= "Off" and obj.Parent == Lighting then
-            if obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect")
+        if not obj or obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
+
+        -- Nur Effekt-Instanzen anfassen. Keine Parts, Decals, Texturen,
+        -- Accessories, Tools, Models oder sonstige Gegenstände verändern.
+        local isEffect =
+            obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+            or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
+            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight")
+            or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect")
             or obj:IsA("ColorCorrectionEffect") or obj:IsA("BloomEffect")
             or obj:IsA("DepthOfFieldEffect") or obj:IsA("BrightnessEffect")
-            or obj:IsA("DitheringEffect") then return end
-        end
-        if obj:IsA("Accessory") or obj:IsA("Hat") then
-            local char = LP.Character
-            if char and obj:IsDescendantOf(char) then return end
-            obj:Destroy()
-        elseif obj:IsA("BasePart") then
-            local ownChar = LP.Character
-            if ownChar and obj:IsDescendantOf(ownChar) then return end
-            if not antiLagOriginalProperties[obj] then
-                antiLagOriginalProperties[obj] = {Material=obj.Material, Reflectance=obj.Reflectance, CastShadow=obj.CastShadow, TopSurface=obj.TopSurface, BottomSurface=obj.BottomSurface, FrontSurface=obj.FrontSurface, BackSurface=obj.BackSurface, LeftSurface=obj.LeftSurface, RightSurface=obj.RightSurface}
-            end
-            obj.Material      = Enum.Material.Plastic
-            obj.Reflectance   = 0
-            obj.CastShadow    = false
-            obj.TopSurface    = Enum.SurfaceType.Smooth
-            obj.BottomSurface = Enum.SurfaceType.Smooth
-            obj.FrontSurface  = Enum.SurfaceType.Smooth
-            obj.BackSurface   = Enum.SurfaceType.Smooth
-            obj.LeftSurface   = Enum.SurfaceType.Smooth
-            obj.RightSurface  = Enum.SurfaceType.Smooth
-            for _, child in ipairs(obj:GetChildren()) do
-                if child:IsA("Decal") or child:IsA("Texture") then
-                    child.Transparency = 0.5
-                end
-            end
-        elseif obj:IsA("Decal") or obj:IsA("Texture") then
-            obj.Transparency = 0.5
-        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
-            or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
-            obj.Enabled = false
-        elseif obj:IsA("PointLight") or obj:IsA("SpotLight")
-            or obj:IsA("SurfaceLight") then
-            obj.Enabled = false
-        elseif obj:IsA("SelectionBox") then
+            or obj:IsA("DitheringEffect")
+
+        if not isEffect then return end
+        if obj:IsA("PostEffect") and obj.Parent == Lighting and skyTheme ~= "Off" then
             return
         end
+
+        if antiLagOriginalProperties[obj] == nil then
+            antiLagOriginalProperties[obj] = {Enabled = obj.Enabled}
+        end
+        obj.Enabled = false
     end)
 end
 
 function enableAntiLag()
-    antiLagEnabled           = true
-    removeAccessoriesEnabled = true
-
-    _G._AmbitiousDefLightBrightness = _G._AmbitiousDefLightBrightness or Lighting.Brightness
-    _G._AmbitiousDefLightClock      = _G._AmbitiousDefLightClock or Lighting.ClockTime
-    _G._AmbitiousDefLightAmbient    = _G._AmbitiousDefLightAmbient or Lighting.OutdoorAmbient
+    antiLagEnabled = true
+    removeAccessoriesEnabled = true -- Kompatibilität mit vorhandenen Toggle-/UI-Stellen; löscht nichts.
 
     pcall(function()
-        settings().Rendering.QualityLevel        = 1
+        settings().Rendering.QualityLevel = 1
         settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
     end)
 
-    if skyTheme == "Off" then
-        Lighting.GlobalShadows            = false
-        Lighting.FogEnd                   = 1e10
-        Lighting.FogStart                 = 0
-        Lighting.Brightness               = 1
-        Lighting.EnvironmentDiffuseScale  = 0
-        Lighting.EnvironmentSpecularScale = 0
-        Lighting.ShadowSoftness           = 0
-        Lighting.ExposureCompensation     = 0
-        pcall(function() Lighting.Technology = Enum.Technology.Compatibility end)
-
-        for _, e in pairs(Lighting:GetChildren()) do
-            pcall(function()
-                if e:GetAttribute("_AmbitiousVivid") then return end
-                if e:IsA("BlurEffect") or e:IsA("SunRaysEffect")
-                or e:IsA("ColorCorrectionEffect") or e:IsA("BloomEffect")
-                or e:IsA("DepthOfFieldEffect") or e:IsA("BrightnessEffect")
-                or e:IsA("DitheringEffect") then
-                    e.Enabled = false
-                end
-            end)
-        end
-    end
-
+    -- Bestehende Effekte einmalig deaktivieren.
     for _, obj in ipairs(workspace:GetDescendants()) do
         applyAntiLagDerender(obj)
     end
-
-    for _, descendant in pairs(workspace:GetDescendants()) do
-        pcall(function()
-            if descendant:IsA("ParticleEmitter") then
-                descendant.Enabled = false
-            elseif descendant:IsA("Decal") then
-                descendant.Transparency = 1
-            elseif descendant:IsA("BasePart") then
-                local char = LP.Character
-                if char and descendant:IsDescendantOf(char) then return end
-                descendant.Material      = Enum.Material.Plastic
-                descendant.Reflectance   = 0
-                descendant.CastShadow    = false
-                descendant.TopSurface    = Enum.SurfaceType.Smooth
-                descendant.BottomSurface = Enum.SurfaceType.Smooth
-                descendant.FrontSurface  = Enum.SurfaceType.Smooth
-                descendant.BackSurface   = Enum.SurfaceType.Smooth
-                descendant.LeftSurface   = Enum.SurfaceType.Smooth
-                descendant.RightSurface  = Enum.SurfaceType.Smooth
-            end
-        end)
+    for _, obj in ipairs(Lighting:GetDescendants()) do
+        applyAntiLagDerender(obj)
     end
-
-    pcall(function()
-        workspace.Terrain.WaterWaveSize     = 0
-        workspace.Terrain.WaterWaveSpeed    = 0
-        workspace.Terrain.WaterReflectance  = 0
-        workspace.Terrain.WaterTransparency = 0
-        workspace.Terrain.Decoration        = false
-    end)
 
     if antiLagDescConn then antiLagDescConn:Disconnect() end
     antiLagDescConn = workspace.DescendantAdded:Connect(function(obj)
-        if obj:GetAttribute("_AmbitiousHubSky") then return end
-        if obj:IsA("Sky") or obj:IsA("Atmosphere") or obj:IsA("Clouds") then return end
-        if removeAccessoriesEnabled then applyAntiLagDerender(obj) end
+        if antiLagEnabled then applyAntiLagDerender(obj) end
+    end)
+
+    if antiLagLightingConn then antiLagLightingConn:Disconnect() end
+    antiLagLightingConn = Lighting.DescendantAdded:Connect(function(obj)
+        if antiLagEnabled then applyAntiLagDerender(obj) end
     end)
 end
 
 function disableAntiLag()
-    antiLagEnabled           = false
+    antiLagEnabled = false
     removeAccessoriesEnabled = false
+
     if antiLagDescConn then
         antiLagDescConn:Disconnect()
         antiLagDescConn = nil
     end
-    for part, props in pairs(antiLagOriginalProperties) do
-        if part and part.Parent then
+    if antiLagLightingConn then
+        antiLagLightingConn:Disconnect()
+        antiLagLightingConn = nil
+    end
+
+    -- Alle zuvor deaktivierten Effekte auf ihren Originalzustand zurücksetzen.
+    for effect, props in pairs(antiLagOriginalProperties) do
+        if effect and effect.Parent then
             pcall(function()
-                part.Material=props.Material; part.Reflectance=props.Reflectance; part.CastShadow=props.CastShadow
-                part.TopSurface=props.TopSurface; part.BottomSurface=props.BottomSurface; part.FrontSurface=props.FrontSurface
-                part.BackSurface=props.BackSurface; part.LeftSurface=props.LeftSurface; part.RightSurface=props.RightSurface
+                effect.Enabled = props.Enabled
             end)
         end
-        antiLagOriginalProperties[part] = nil
-    end
-    if skyTheme == "Off" then
-        pcall(function()
-            if _G._AmbitiousDefLightBrightness then
-                Lighting.Brightness = _G._AmbitiousDefLightBrightness
-            end
-            if _G._AmbitiousDefLightClock then
-                Lighting.ClockTime = _G._AmbitiousDefLightClock
-            end
-            if _G._AmbitiousDefLightAmbient then
-                Lighting.OutdoorAmbient = _G._AmbitiousDefLightAmbient
-            end
-            Lighting.ExposureCompensation = 0
-            Lighting.GlobalShadows = true
-        end)
+        antiLagOriginalProperties[effect] = nil
     end
 end
 
@@ -7085,9 +7130,18 @@ function loadAllSettings()
     if autoStealVariantLabel then
         autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant)
     end
-    CarrySystem.normalSpeed = data.carrySysNormal or NS
-    CarrySystem.carrySpeed = data.carrySysCarry or CS
-    CarrySystem.laggerSpeed = data.carrySysLagger or LAGGER_SPEED
+    CarrySystem.normalSpeed = tonumber(data.carrySysNormal) or NS
+    local savedBaseCarry = tonumber(data.carrySpeed)
+    local savedSystemCarry = tonumber(data.carrySysCarry)
+    local loadedCarrySpeed = math.max(savedBaseCarry or 0, savedSystemCarry or 0)
+    if loadedCarrySpeed <= 0 then loadedCarrySpeed = CS end
+    -- v15 shipped with 29 as the default; migrate that legacy default to 30.
+    if loadedCarrySpeed == 29 then loadedCarrySpeed = 30 end
+    CS = _clamp(loadedCarrySpeed, 1, 500)
+    CarrySystem.carrySpeed = CS
+    if carryBox then carryBox.Text = tostring(CS) end
+    if carrySysCarryBox then carrySysCarryBox.Text = tostring(CS) end
+    CarrySystem.laggerSpeed = tonumber(data.carrySysLagger) or LAGGER_SPEED
     CarrySystem.laggerCarrySpeed = data.carrySysLaggerCarry or LAGGER_CARRY_SPEED
     CarrySystem.softStealSpeed = data.carrySysSoftStealSpeed or 30
     CarrySystem.softStealRadius = data.carrySysSoftStealRadius or 10
@@ -7349,7 +7403,7 @@ function resetToFactoryDefaults()
         if setNoPlayerCollisionVisual then setNoPlayerCollisionVisual(false) end
         if setNoCamCollisionVisual then setNoCamCollisionVisual(false) end
         NS = 60
-        CS = 29
+        CS = 30
         LAGGER_SPEED = 15
         LAGGER_CARRY_SPEED = 24.5
         CONFIG.STEAL_RANGE = 61
@@ -8482,7 +8536,18 @@ function buildGui()
 
     mkSect(speedPage, "Base Speeds")
     do local row = mkRow(speedPage, 38); mkLabel(row, "Normal Speed");    normalBox  = mkBox(row, NS, 50, 56, function(v) if v > 0 and v <= 500 then NS = v end end) end
-    do local row = mkRow(speedPage, 38); mkLabel(row, "Carry Speed");     carryBox   = mkBox(row, CS, 50, 56, function(v) if v > 0 and v <= 500 then CS = v end end) end
+    do
+        local row = mkRow(speedPage, 38)
+        mkLabel(row, "Carry Speed")
+        carryBox = mkBox(row, CS, 50, 56, function(v)
+            if v > 0 and v <= 500 then
+                CS = v
+                CarrySystem:setCarrySpeed(v)
+                if carrySysCarryBox then carrySysCarryBox.Text = tostring(v) end
+                saveAllSettings()
+            end
+        end)
+    end
     do local row = mkRow(speedPage, 38); mkLabel(row, "Lagger Normal");   laggerBox  = mkBox(row, LAGGER_SPEED, 50, 56, function(v) if v > 0 and v <= 500 then LAGGER_SPEED = v end end) end
     do local row = mkRow(speedPage, 38); mkLabel(row, "Lagger Carry");    lagger2Box = mkBox(row, LAGGER_CARRY_SPEED, 50, 56, function(v) if v > 0 and v <= 500 then LAGGER_CARRY_SPEED = v end end) end
 
@@ -8533,7 +8598,18 @@ function buildGui()
     end)
 
     do local row = mkRow(speedPage, 38); mkLabel(row, "Normal Speed");       carrySysNormalBox          = mkBox(row, CarrySystem.normalSpeed, 50, 56, function(v) if v > 0 and v <= 500 then CarrySystem:setNormalSpeed(v); saveAllSettings() end end) end
-    do local row = mkRow(speedPage, 38); mkLabel(row, "Carry Speed");        carrySysCarryBox           = mkBox(row, CarrySystem.carrySpeed, 50, 56, function(v) if v > 0 and v <= 500 then CarrySystem:setCarrySpeed(v); saveAllSettings() end end) end
+    do
+        local row = mkRow(speedPage, 38)
+        mkLabel(row, "Carry Speed")
+        carrySysCarryBox = mkBox(row, CarrySystem.carrySpeed, 50, 56, function(v)
+            if v > 0 and v <= 500 then
+                CS = v
+                CarrySystem:setCarrySpeed(v)
+                if carryBox then carryBox.Text = tostring(v) end
+                saveAllSettings()
+            end
+        end)
+    end
     do local row = mkRow(speedPage, 38); mkLabel(row, "Lagger Speed");       carrySysLaggerBox          = mkBox(row, CarrySystem.laggerSpeed, 50, 56, function(v) if v > 0 and v <= 500 then CarrySystem:setLaggerSpeed(v); saveAllSettings() end end) end
     do local row = mkRow(speedPage, 38); mkLabel(row, "Lagger Carry Spd");   carrySysLaggerCarryBox     = mkBox(row, CarrySystem.laggerCarrySpeed, 50, 56, function(v) if v > 0 and v <= 500 then CarrySystem:setLaggerCarrySpeed(v); saveAllSettings() end end) end
     do local row = mkRow(speedPage, 38); mkLabel(row, "Soft Steal Speed");   carrySysSoftStealSpeedBox  = mkBox(row, CarrySystem.softStealSpeed, 50, 56, function(v) if v > 0 and v <= 500 then CarrySystem:setSoftStealSpeed(v); saveAllSettings() end end) end
@@ -9689,11 +9765,14 @@ function createMobilePanel()
     panel.Name = "FictionHubMobilePanel"
     panel.ResetOnSpawn = false
     panel.IgnoreGuiInset = true
-    panel.DisplayOrder = 2000001
+    panel.DisplayOrder = -1 -- Keep Roblox TouchGui (especially JumpButton) above hub controls.
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
-    local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
-    if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
+    -- Keep this touch-control ScreenGui in PlayerGui so Roblox TouchGui can
+    -- remain above it in the same display-order stack.
+    local okPanel = pcall(function() panel.Parent = LP:WaitForChild("PlayerGui") end)
+    if not okPanel then
+        panel.Parent = game:GetService("CoreGui")
+    end
 
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
@@ -9714,8 +9793,8 @@ function createMobilePanel()
     end
     container.BackgroundTransparency = 1
     container.BorderSizePixel = 0
-    container.Active = true
-    container.Selectable = true
+    container.Active = false
+    container.Selectable = false
     container.ClipsDescendants = false
 
     local containerScale = Instance.new("UIScale", container)
@@ -9726,6 +9805,9 @@ function createMobilePanel()
     btnContainer.Name = "ButtonsContainer"
     btnContainer.Size = UDim2.new(1, 0, 1, 0)
     btnContainer.BackgroundTransparency = 1
+    btnContainer.BorderSizePixel = 0
+    btnContainer.Active = false
+    btnContainer.Selectable = false
     btnContainer.ClipsDescendants = false
 
     local WHITE = Color3.fromRGB(255, 255, 255)
