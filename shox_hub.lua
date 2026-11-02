@@ -6995,11 +6995,20 @@ function loadAllSettings()
     local success, data = pcall(function() return HS:JSONDecode(readfile(CONFIG_FILE)) end)
     if not success or type(data) ~= "table" then return false end
     _isLoading = true
-    NS = data.normalSpeed or NS
-    CS = data.carrySpeed or CS
-    LAGGER_SPEED = data.laggerSpeed1 or LAGGER_SPEED
-    LAGGER_CARRY_SPEED = data.laggerSpeed2 or LAGGER_CARRY_SPEED
-    CONFIG.STEAL_RANGE = data.stealRadius or CONFIG.STEAL_RANGE
+    -- JSON values are user-editable; never let strings/NaN-like values enter
+    -- movement calculations. Keep the last known-good defaults on invalid data.
+    local function readNumber(value, fallback, minimum, maximum)
+        local number = tonumber(value)
+        if not number or number ~= number or number == math.huge or number == -math.huge then
+            return fallback
+        end
+        return math.clamp(number, minimum, maximum)
+    end
+    NS = readNumber(data.normalSpeed, NS, 1, 500)
+    CS = readNumber(data.carrySpeed, CS, 1, 500)
+    LAGGER_SPEED = readNumber(data.laggerSpeed1, LAGGER_SPEED, 1, 500)
+    LAGGER_CARRY_SPEED = readNumber(data.laggerSpeed2, LAGGER_CARRY_SPEED, 1, 500)
+    CONFIG.STEAL_RANGE = readNumber(data.stealRadius, CONFIG.STEAL_RANGE, 1, 500)
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
     if data.lockUI ~= nil then uiLocked = data.lockUI else uiLocked = false end
     if data.editMode ~= nil then editModeEnabled = data.editMode else editModeEnabled = false end
@@ -7107,18 +7116,18 @@ function loadAllSettings()
     else
         if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
     end
-    skyTheme = data.skyTheme or "Off"
-    if skyTheme ~= "Off" then pcall(applyCustomSky, skyTheme) end
-    if skySelectorLabel then skySelectorLabel.Text = skyTheme end
-    neonWeatherEnabled = data.neonWeather or false
-    if neonWeatherEnabled then
-        task.defer(function() toggleNeonWeather(true) end)
-    else
-        toggleNeonWeather(false)
-        skyTheme = "Off"
-        pcall(applyCustomSky, "Off")
-        if skySelectorLabel then skySelectorLabel.Text = "Off" end
+    -- Restore Neon Weather first because disabling it restores the captured
+    -- Lighting state. Apply the saved Sky preset afterwards so it is not erased.
+    neonWeatherEnabled = data.neonWeather == true
+    pcall(toggleNeonWeather, neonWeatherEnabled)
+
+    local requestedSky = data.skyTheme
+    if type(requestedSky) ~= "string" or (requestedSky ~= "Off" and SKY_PRESETS[requestedSky] == nil) then
+        requestedSky = "Off"
     end
+    skyTheme = requestedSky
+    pcall(applyCustomSky, skyTheme)
+    if skySelectorLabel then skySelectorLabel.Text = skyTheme end
     if data.animPack and ANIM_PACKS[data.animPack] then
         startAnimPack(data.animPack)
     else
@@ -8376,7 +8385,6 @@ function buildGui()
         clk.AutoButtonColor = false
         clk.ZIndex = 10
         clk.MouseButton1Click:Connect(function()
-            if editModeEnabled and not uiLocked then return end
             on = not on
             sv(on)
             pcall(cb, on)
