@@ -1890,9 +1890,16 @@ local KatanaSkin = (function()
     }
 
     local function applySkin(skinName)
+        if skinName ~= "KATANA" and skinName ~= "NONE" then return false end
         captureKatanaTemplate()
         local tool = findBatForKatanaSkin()
         if not tool then
+            -- NONE must also clean up the previously applied tool if it is
+            -- temporarily outside Character/Backpack but still exists.
+            local previousBat = State.LastBat
+            if skinName == "NONE" and previousBat and previousBat.Parent then
+                pcall(function() removeSkin(previousBat) end)
+            end
             State.LastBat = nil
             State.LastAppliedSkin = nil
             return false
@@ -1901,7 +1908,7 @@ local KatanaSkin = (function()
         removeSkin(tool)
         if skinName == "NONE" then
             State.LastBat = tool
-            State.LastAppliedSkin = skinName
+            State.LastAppliedSkin = "NONE"
             return true
         end
         hideOriginalHandle(tool, true)
@@ -2405,7 +2412,7 @@ local function _applyVelocitySpeed(dir, speed, hrp)
 end
 
 function getAutoPathSpeed()
-    if laggerCarryToggled or laggerToggled then return LAGGER_SPEED end
+    -- Auto Left/Right are normal-speed automation; Lagger is a separate manual mode.
     return NS
 end
 
@@ -4227,13 +4234,15 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     local flat = _V3new(direction.X, 0, direction.Z)
     if flat.Magnitude < 0.001 then return end
 
-    -- Cap Auto Left/Right at 30 studs/s and smooth acceleration by elapsed time.
-    local speed = math.clamp(tonumber(requestedSpeed) or 16, 1, 30)
+    -- Follow the configured normal speed (NS=60); the previous hard 30 cap
+    -- silently halved Auto Left/Right speed even when Lagger mode was disabled.
+    local normalCap = math.max(tonumber(NS) or 60, 1)
+    local speed = math.clamp(tonumber(requestedSpeed) or normalCap, 1, normalCap)
     local current = root.AssemblyLinearVelocity
     local desiredX = flat.Unit.X * speed
     local desiredZ = flat.Unit.Z * speed
     local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
-    local alpha = 1 - math.exp(-safeDt * 12)
+    local alpha = 1 - math.exp(-safeDt * 24)
 
     root.AssemblyLinearVelocity = _V3new(
         current.X + (desiredX - current.X) * alpha,
@@ -6976,8 +6985,10 @@ function loadAllSettings()
     if pbScale then pbScale.Scale = progressBarScale end
     espEnabled = data.espEnabled or false
     if espEnabled then toggleESP(true) else toggleESP(false) end
-    currentColorTheme = currentColorTheme or "Neutral"
-    selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Neutral"]
+    -- Load the persisted theme (older/invalid values fall back safely).
+    currentColorTheme = normalizeShoxTheme(data.themeColor)
+    selectedColor = COLOR_THEMES[currentColorTheme]
+    updateAllUIThemeColors(selectedColor)
 
     _G.AceAntiBypassLoadFromConfig(data)
     autoBatV2Enabled = _G.AceAntiBypassAimbotOn == true
@@ -7016,13 +7027,21 @@ function loadAllSettings()
 
     infJumpEnabled      = data.holdJumpEnabled == true
     infJumpMode         = (data.holdJumpMode == "MANUAL") and "MANUAL" or "HOLD"
+    -- Explicitly stop stale hold/mobile/controller state when the saved toggle is off.
+    if _G.setInfJumpInternal then
+        _G.setInfJumpInternal(infJumpEnabled)
+    elseif not infJumpEnabled and _G.AmbitiousStopNormalInfJumpHoldState then
+        _G.AmbitiousStopNormalInfJumpHoldState()
+    end
     mirrorTPDownEnabled = data.mirrorTPDown == true
     antiKickEnabled     = data.safeMode == true
 
     noPlayerCollisionEnabled = data.noPlayerCollision == true
     noCamCollisionEnabled    = data.noCamCollision == true
-    if noPlayerCollisionEnabled then
-        if _G.SetNoPlayerCollision then _G.SetNoPlayerCollision(true) end
+    -- Always synchronize runtime state with the config, including OFF;
+    -- otherwise a previous injected session can leave collision disabled.
+    if _G.SetNoPlayerCollision then
+        _G.SetNoPlayerCollision(noPlayerCollisionEnabled)
     end
     if noCamCollisionEnabled then
         enableNoCamCollision()
