@@ -1,4 +1,7 @@
-if _G.BloodHoundsRunning then return end
+if _G.BloodHoundsRunning then
+    warn("[ShoxHub] Script läuft bereits. Bitte die laufende Instanz zuerst entladen.")
+    return
+end
 _G.BloodHoundsRunning = true
 
 repeat task.wait() until game:IsLoaded()
@@ -56,10 +59,13 @@ local function shoxIntroFinish(stopSound)
     if not ShoxIntro.Running then return end
     ShoxIntro.Running = false
     if ShoxIntroHeartbeat then ShoxIntroHeartbeat:Disconnect(); ShoxIntroHeartbeat = nil end
-    if stopSound and ShoxIntroSound then
-        pcall(function() ShoxIntroSound:Stop(); ShoxIntroSound:Destroy() end)
+    if ShoxIntroSound then
+        pcall(function()
+            ShoxIntroSound:Stop()
+            ShoxIntroSound:Destroy()
+        end)
+        ShoxIntroSound = nil
     end
-    ShoxIntroSound = nil
     if ShoxIntroGui then
         local gui = ShoxIntroGui
         ShoxIntroGui = nil
@@ -125,7 +131,7 @@ local function shoxIntroPlay()
         Name = "ShoxCodeSniperIntro",
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
-        DisplayOrder = 9999,
+        DisplayOrder = 1000005,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
     }, shoxIntroParent())
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
@@ -760,19 +766,17 @@ function CarrySystem:toggleSoftSteal() self:setSoftStealEnabled(not self.softSte
 function CarrySystem:isRunning() return self._heartbeatConn ~= nil end
 function CarrySystem:getCurrentSpeed() return self:getActiveSpeed() end
 
+-- Five supported ShoxHub themes: Black, White, Blue, Lava and Neutral.
 local COLOR_THEMES = {
-    ["Gris"] = Color3.fromRGB(30, 30, 35),
-    ["Abyss Blue"] = Color3.fromRGB(0, 120, 255),
-    ["Venom Green"] = Color3.fromRGB(20, 220, 70),
-    ["Royal Gold"] = Color3.fromRGB(255, 190, 35),
-    ["Velvet Rose"] = Color3.fromRGB(230, 45, 125),
-    ["Crimson Night"] = Color3.fromRGB(190, 25, 45),
-    ["Violet"] = Color3.fromRGB(150, 75, 255),
-    ["Cyan"] = Color3.fromRGB(0, 210, 220),
+    ["Black"]   = Color3.fromRGB(12, 12, 15),
+    ["White"]   = Color3.fromRGB(245, 245, 250),
+    ["Blue"]    = Color3.fromRGB(35, 125, 255),
+    ["Lava"]    = Color3.fromRGB(255, 83, 35),
+    ["Neutral"] = Color3.fromRGB(125, 130, 140),
 }
 
-currentColorTheme = "Gris"
-selectedColor = COLOR_THEMES["Gris"]
+currentColorTheme = "Neutral"
+selectedColor = COLOR_THEMES["Neutral"]
 
 function getThemeColor() return selectedColor end
 
@@ -2120,7 +2124,17 @@ function _G.AmbitiousStopNormalInfJumpHoldState()
 end
 
 UIS.JumpRequest:Connect(function()
-    _G.AmbitiousApplyNormalInfJumpBoost(50)
+    -- Preserve Roblox's normal jump even when the custom jump feature is disabled.
+    local character = LP.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health > 0 then
+        pcall(function()
+            humanoid.Jump = true
+        end)
+    end
+    if infJumpEnabled and infJumpMode ~= "MANUAL" then
+        _G.AmbitiousApplyNormalInfJumpBoost(50)
+    end
 end)
 
 UIS.InputBegan:Connect(function(input)
@@ -2163,6 +2177,11 @@ function _G.AmbitiousHookNormalInfMobileJumpButton(obj)
     S.hooked[obj] = true
     -- Activated fires reliably for Roblox's built-in mobile jump button.
     obj.Activated:Connect(function()
+        local character = LP.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid.Health > 0 then
+            pcall(function() humanoid.Jump = true end)
+        end
         if infJumpEnabled and infJumpMode ~= "MANUAL" then
             _G.AmbitiousApplyNormalInfJumpBoost(50)
         end
@@ -3335,6 +3354,7 @@ local AntiDieModule = {
     deathConns   = {},
     charConn     = nil,
     humanoid     = nil,
+    originalByHumanoid = setmetatable({}, {__mode = "k"}),
 }
 
 local function disconnectAntiDieAll()
@@ -3353,6 +3373,17 @@ local function protectAntiDieChar(char)
     local hum = char:WaitForChild("Humanoid", 5)
     if not hum then return end
 
+    if not AntiDieModule.originalByHumanoid[hum] then
+        local ok, snapshot = pcall(function()
+            return {
+                MaxHealth = hum.MaxHealth,
+                Health = hum.Health,
+                BreakJointsOnDeath = hum.BreakJointsOnDeath,
+                DeadEnabled = hum:GetStateEnabled(Enum.HumanoidStateType.Dead),
+            }
+        end)
+        if ok then AntiDieModule.originalByHumanoid[hum] = snapshot end
+    end
     hum.MaxHealth = math.huge
     hum.Health    = math.huge
     pcall(function()
@@ -3420,11 +3451,20 @@ function AntiDieModule.stop()
     local char = LP.Character
     local hum  = char and char:FindFirstChildOfClass("Humanoid")
     if hum then
+        local snapshot = AntiDieModule.originalByHumanoid[hum]
         pcall(function()
-            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
-            hum.MaxHealth = 100
-            hum.Health    = 100
+            local deadEnabled = true
+            if snapshot and snapshot.DeadEnabled ~= nil then
+                deadEnabled = snapshot.DeadEnabled
+            end
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, deadEnabled)
+            if snapshot then
+                hum.MaxHealth = snapshot.MaxHealth
+                hum.Health = math.clamp(snapshot.Health, 0, snapshot.MaxHealth)
+                hum.BreakJointsOnDeath = snapshot.BreakJointsOnDeath
+            end
         end)
+        AntiDieModule.originalByHumanoid[hum] = nil
     end
     AntiDieModule.humanoid = nil
     print("[AntiDie] Desactivado")
@@ -3831,6 +3871,17 @@ function updateEnemySpeedLabels()
         end
     end
 end
+
+Players.PlayerRemoving:Connect(function(player)
+    local label = enemySpeedLabels[player]
+    if label then
+        pcall(function()
+            local billboard = label.Parent
+            if billboard then billboard:Destroy() end
+        end)
+    end
+    enemySpeedLabels[player] = nil
+end)
 
 function startEnemySpeed()
     if enemySpeedConn then enemySpeedConn:Disconnect() end
@@ -4324,7 +4375,8 @@ function stopAimbotAdapt()
         pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
     end
     if root then
-        root.AssemblyLinearVelocity = _V3new(0, -0.1, 0)
+        local velocity = root.AssemblyLinearVelocity
+        root.AssemblyLinearVelocity = _V3new(velocity.X, math.max(velocity.Y, 0), velocity.Z)
         root.AssemblyAngularVelocity = _V3zero
     end
     _prevAutoRotate = nil
@@ -6760,9 +6812,9 @@ function loadAllSettings()
     LAGGER_CARRY_SPEED = data.laggerSpeed2 or LAGGER_CARRY_SPEED
     CONFIG.STEAL_RANGE = data.stealRadius or CONFIG.STEAL_RANGE
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
-    if data.lockUI ~= nil then uiLocked = data.lockUI else uiLocked = true end
+    if data.lockUI ~= nil then uiLocked = data.lockUI else uiLocked = false end
     if data.editMode ~= nil then editModeEnabled = data.editMode else editModeEnabled = false end
-    if data.mobileButtonsLocked ~= nil then mobileButtonsLocked = data.mobileButtonsLocked else mobileButtonsLocked = true end
+    if data.mobileButtonsLocked ~= nil then mobileButtonsLocked = data.mobileButtonsLocked else mobileButtonsLocked = false end
     if data.antiRagdollMode then
         antiRagdollMode = data.antiRagdollMode
     else
@@ -6786,14 +6838,8 @@ function loadAllSettings()
     if pbScale then pbScale.Scale = progressBarScale end
     espEnabled = data.espEnabled or false
     if espEnabled then toggleESP(true) else toggleESP(false) end
-    local savedTheme = data.themeColor
-    if type(savedTheme) == "string" and COLOR_THEMES[savedTheme] then
-        currentColorTheme = savedTheme
-        selectedColor = COLOR_THEMES[savedTheme]
-    else
-        currentColorTheme = currentColorTheme or "Gris"
-        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Gris"]
-    end
+    currentColorTheme = currentColorTheme or "Neutral"
+    selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Neutral"]
 
     _G.AceAntiBypassLoadFromConfig(data)
     autoBatV2Enabled = _G.AceAntiBypassAimbotOn == true
@@ -7082,8 +7128,8 @@ function forceResetUI()
         currentColorTheme = savedTheme
         selectedColor = COLOR_THEMES[savedTheme]
     else
-        currentColorTheme = currentColorTheme or "Gris"
-        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Gris"]
+        currentColorTheme = currentColorTheme or "Neutral"
+        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Neutral"]
     end
     updateAllUIThemeColors(selectedColor)
     backgroundIndex = 1
@@ -7262,8 +7308,8 @@ function resetToFactoryDefaults()
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
-        currentColorTheme = "Gris"
-        selectedColor = COLOR_THEMES["Gris"]
+        currentColorTheme = "Neutral"
+        selectedColor = COLOR_THEMES["Neutral"]
         backgroundIndex = 1
         backgroundImageTransparency = 0.35
         applyBackground(1)
@@ -7589,7 +7635,7 @@ function buildGui()
     gui = Instance.new("ScreenGui")
     gui.Name = "FictionHub"
     gui.ResetOnSpawn = false
-    gui.DisplayOrder = 10
+    gui.DisplayOrder = 1000000
     gui.IgnoreGuiInset = true
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
     local guiOk = pcall(function() gui.Parent = game:GetService("CoreGui") end)
@@ -9119,7 +9165,7 @@ function buildGui()
 
     mkSect(configPage, "UI Color Themes")
     do
-        local themeNames = {"Gris", "Abyss Blue", "Venom Green", "Royal Gold", "Velvet Rose", "Crimson Night", "Violet", "Cyan"}
+        local themeNames = {"Black", "White", "Blue", "Lava", "Neutral"}
         local row = mkRow(configPage, 72)
         local info = Instance.new("TextLabel", row)
         info.BackgroundTransparency = 1
@@ -9139,7 +9185,7 @@ function buildGui()
         local layout = Instance.new("UIGridLayout", holder)
         layout.CellSize = UDim2.new(0, 30, 0, 30)
         layout.CellPadding = UDim2.new(0, 7, 0, 4)
-        layout.FillDirectionMaxCells = 8
+        layout.FillDirectionMaxCells = 5
         for _, themeName in ipairs(themeNames) do
             local swatch = Instance.new("TextButton", holder)
             swatch.Name = "Theme_" .. themeName:gsub("%s+", "")
@@ -9543,7 +9589,7 @@ function createMobilePanel()
     panel.Name = "FictionHubMobilePanel"
     panel.ResetOnSpawn = false
     panel.IgnoreGuiInset = true
-    panel.DisplayOrder = 100
+    panel.DisplayOrder = 1000001
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
@@ -9876,7 +9922,7 @@ function createTpBatFloatingButton()
     panel.Name = "TpBatButton"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 21
+    panel.DisplayOrder = 1000002
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -9977,7 +10023,7 @@ function createBatV2FloatingButton()
     panel.Name = "BatV2Button"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 22
+    panel.DisplayOrder = 1000003
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -10077,7 +10123,7 @@ function createInstaResetFloatingButton()
     panel.Name = "InstaResetButton"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 23
+    panel.DisplayOrder = 1000004
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -10236,7 +10282,11 @@ local function hasAnimalEquipped(player)
     if not player or not player.Character then return false end
     for _, child in ipairs(player.Character:GetChildren()) do
         if child:IsA("Tool") then
-            if child:FindFirstChild("Handle") or child.Name:find("Animal") or child.Name:find("Pet") then
+            local n = child.Name:lower()
+            if child:FindFirstChild("Handle")
+                or n:find("animal", 1, true)
+                or n:find("pet", 1, true)
+                or n:find("bunny", 1, true) then
                 return true
             end
         end
@@ -10285,8 +10335,9 @@ local function getBatV2Counter()
             if child:IsA("Tool") then
                 local name = child.Name:lower()
                 if name:find("bat") or name:find("slap") or name:find("sword") or name:find("knife") then
-                    child.Parent = char
-                    return child
+                    if pcall(function() child.Parent = char end) then
+                        return child
+                    end
                 end
             end
         end
@@ -10294,8 +10345,9 @@ local function getBatV2Counter()
     if bp then
         for _, child in ipairs(bp:GetChildren()) do
             if child:IsA("Tool") then
-                child.Parent = char
-                return child
+                if pcall(function() child.Parent = char end) then
+                    return child
+                end
             end
         end
     end
@@ -10716,8 +10768,8 @@ local function ShoxHubIsCarrying()
         local ShoxHubName = ShoxHubChild.Name:lower()
         if ShoxHubName:find("brain", 1, true) or ShoxHubName:find("animal", 1, true) or ShoxHubName:find("carry", 1, true) or ShoxHubName:find("steal", 1, true) then return true end
     end
-    local ShoxHubHumanoid = ShoxHubCharacter:FindFirstChildOfClass("Humanoid")
-    return ShoxHubHumanoid and ShoxHubHumanoid.WalkSpeed > 0 and ShoxHubHumanoid.WalkSpeed <= 25 and ShoxHubHumanoid.WalkSpeed ~= 16
+    if LP:GetAttribute("Stealing") == true then return true end
+    return false
 end
 
 RunService.Heartbeat:Connect(function()
@@ -10771,11 +10823,35 @@ RunService.Heartbeat:Connect(function()
         ShoxHubLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
         ShoxHubLabel.ZIndex = 2
     end
-    ShoxHubE01Gui.Enabled = true
+    local gui = ShoxHubE01Gui
+    if not gui or not gui.Parent then
+        ShoxHubE01Gui = nil
+        ShoxHubE01StartedAt = nil
+        return
+    end
+    local bar = gui:FindFirstChild("Bar")
+    local label = bar and bar:FindFirstChild("Label")
+    local track = bar and bar:FindFirstChild("Track")
+    local fill = track and track:FindFirstChild("Fill")
+    if not (bar and label and fill) then
+        pcall(function() gui:Destroy() end)
+        ShoxHubE01Gui = nil
+        ShoxHubE01StartedAt = nil
+        return
+    end
+    gui.Enabled = true
     local ShoxHubFinished = ShoxHubProgress >= 1
-    ShoxHubE01Gui.Bar.Label.Text = ShoxHubFinished and "STEAL" or "DONT STEAL"
-    ShoxHubE01Gui.Bar.Label.TextColor3 = ShoxHubFinished and Color3.fromRGB(85, 255, 125) or Color3.fromRGB(255, 75, 85)
-    ShoxHubE01Gui.Bar.Track.Fill.Size = UDim2.new(ShoxHubProgress, 0, 1, 0)
+    label.Text = ShoxHubFinished and "STEAL" or "DONT STEAL"
+    label.TextColor3 = ShoxHubFinished and Color3.fromRGB(85, 255, 125) or Color3.fromRGB(255, 75, 85)
+    fill.Size = UDim2.new(ShoxHubProgress, 0, 1, 0)
+end)
+
+LP.CharacterAdded:Connect(function()
+    if ShoxHubE01Gui then
+        pcall(function() ShoxHubE01Gui:Destroy() end)
+    end
+    ShoxHubE01Gui = nil
+    ShoxHubE01StartedAt = nil
 end)
 
 local _buildGuiOk, _buildGuiErr = pcall(buildGui)
