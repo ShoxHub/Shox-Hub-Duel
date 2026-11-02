@@ -58,7 +58,7 @@ local function shoxIntroParent()
     return pg or game:GetService("CoreGui")
 end
 
-local function shoxIntroFinish(stopSound)
+local function shoxIntroFinish()
     ShoxIntro.Running = false
     if ShoxIntroHeartbeat then ShoxIntroHeartbeat:Disconnect(); ShoxIntroHeartbeat = nil end
     if ShoxIntroSound then
@@ -127,22 +127,9 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    local introThemes = {
-        Black = Color3.fromRGB(175, 175, 190),
-        White = Color3.fromRGB(55, 65, 80),
-        Blue = Color3.fromRGB(35, 125, 255),
-        Lava = Color3.fromRGB(255, 83, 35),
-        Neutral = Color3.fromRGB(125, 130, 140),
-    }
-    local savedIntroTheme = "Neutral"
-    pcall(function()
-        if isfile and readfile and isfile("FictionHub.json") then
-            local cfg = ShoxHubHttpService:JSONDecode(readfile("FictionHub.json"))
-            if type(cfg) == "table" and introThemes[cfg.themeColor] then savedIntroTheme = cfg.themeColor end
-        end
-    end)
-    local accent = introThemes[savedIntroTheme]
-    local subColor = savedIntroTheme == "White" and Color3.fromRGB(75, 80, 95) or Color3.fromRGB(190, 200, 215)
+    -- Intro intentionally stays grayscale; saved UI themes do not recolor it.
+    local accent = Color3.fromRGB(225, 225, 225)
+    local subColor = Color3.fromRGB(165, 165, 165)
     local introParent = shoxIntroParent()
     pcall(function()
         local old = introParent:FindFirstChild("ShoxHubIntro") or introParent:FindFirstChild("ShoxCodeSniperIntro")
@@ -213,7 +200,7 @@ local function shoxIntroPlay()
     }, gui)
     shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
     shoxIntroMake("UIStroke", {Color = accent, Thickness = 1, Transparency = 0.55}, skip)
-    skip.Activated:Connect(function() shoxIntroFinish(true) end)
+    skip.Activated:Connect(function() shoxIntroFinish() end)
 
     local timeline, beatIndex = 0, 1
     local pulse, shake, flashAlpha, underline, subtitleAlpha = 0, 0, 0, 0, 0
@@ -260,7 +247,7 @@ local function shoxIntroPlay()
         else
             timeline = timeline + dt
             if os.clock() - startedAt > 8 then
-                shoxIntroFinish(true)
+                shoxIntroFinish()
                 return
             end
         end
@@ -293,7 +280,7 @@ local function shoxIntroPlay()
         subtitle.TextTransparency = math.max(1 - subtitleAlpha, fade)
         skip.BackgroundTransparency = fade
         skip.TextTransparency = fade
-        if timeline >= fadeEnd then shoxIntroFinish(false) end
+        if timeline >= fadeEnd then shoxIntroFinish() end
     end)
 end
 
@@ -490,7 +477,7 @@ function CarrySystem:isCarrying()
 end
 
 function CarrySystem:getActiveSpeed()
-    if self._state and (self._state.autoLeftEnabled or self._state.autoRightEnabled) then
+    if autoLeftEnabled == true or autoRightEnabled == true then
         return self.normalSpeed
     end
     if self.softStealEnabled then
@@ -513,7 +500,7 @@ function CarrySystem:getActiveSpeed()
 end
 
 function CarrySystem:getStatus()
-    if self._state and (self._state.autoLeftEnabled or self._state.autoRightEnabled) then
+    if autoLeftEnabled == true or autoRightEnabled == true then
         return "NORMAL", self.normalSpeed
     end
     if self.softStealEnabled then
@@ -699,8 +686,7 @@ function CarrySystem:updateMovement(dt)
         end
     end
 
-    local hVel = _V3new(hrp.AssemblyLinearVelocity.X, 0, hrp.AssemblyLinearVelocity.Z)
-    local blocked = wallNormalFlat ~= nil or (moving and hVel.Magnitude < 2)
+    local blocked = wallNormalFlat ~= nil
 
     if blocked then
         for _, model in ipairs(char:GetChildren()) do
@@ -809,24 +795,25 @@ function CarrySystem:toggleSoftSteal() self:setSoftStealEnabled(not self.softSte
 function CarrySystem:isRunning() return self._heartbeatConn ~= nil end
 function CarrySystem:getCurrentSpeed() return self:getActiveSpeed() end
 
--- Five supported ShoxHub themes: Black, White, Blue, Lava and Neutral.
+-- ShoxHub V21 test palette: one consistent lime accent. Legacy saved theme
+-- names are accepted but normalized to Lime so old configs remain loadable.
+local LIME = Color3.fromRGB(170, 255, 55)
 local COLOR_THEMES = {
-    ["Black"]   = Color3.fromRGB(12, 12, 15),
-    ["White"]   = Color3.fromRGB(245, 245, 250),
-    ["Blue"]    = Color3.fromRGB(35, 125, 255),
-    ["Lava"]    = Color3.fromRGB(255, 83, 35),
-    ["Neutral"] = Color3.fromRGB(125, 130, 140),
+    ["Lime"] = LIME,
+    ["Black"] = LIME, ["White"] = LIME, ["Blue"] = LIME,
+    ["Lava"] = LIME, ["Neutral"] = LIME,
 }
 
-currentColorTheme = "Neutral"
-selectedColor = COLOR_THEMES["Neutral"]
+currentColorTheme = "Lime"
+selectedColor = LIME
 local function normalizeShoxTheme(name)
-    return (type(name) == "string" and COLOR_THEMES[name]) and name or "Neutral"
+    return "Lime"
 end
 
 function getThemeColor() return selectedColor end
 
 local _lastThemeUpdate = 0
+local espHighlightCache, espBillboardCache, espTracerCache = {}, {}, {}
 local _lastThemeColor = nil
 
 function applyColorTheme(themeName)
@@ -1393,7 +1380,6 @@ _bodyLockConn = nil
 _blSuppressCount = 0
 _blWasEnabled = false
 _blRestoreTimer = nil
-_blSmoothRestore = false
 
 savedProgressBarPos = nil
 savedButtonPositions = {}
@@ -2197,7 +2183,7 @@ end
 UIS.JumpRequest:Connect(function()
     -- Roblox handles the native jump. Only add the optional boost here;
     -- never write Humanoid.Jump from a second competing input handler.
-    if infJumpEnabled and infJumpMode ~= "MANUAL" then
+    if infJumpEnabled then
         _G.AmbitiousApplyNormalInfJumpBoost(50)
     end
 end)
@@ -2243,7 +2229,7 @@ function _G.AmbitiousHookNormalInfMobileJumpButton(obj)
     -- Activated fires reliably for Roblox's built-in mobile jump button.
     obj.Activated:Connect(function()
         -- Do not take over Roblox's built-in jump action.
-        if infJumpEnabled and infJumpMode ~= "MANUAL" then
+        if infJumpEnabled then
             _G.AmbitiousApplyNormalInfJumpBoost(50)
         end
     end)
@@ -2632,6 +2618,7 @@ local function isMyPlotByName(plotName)
     return false
 end
 
+local _nearestPromptCache = { time = 0, prompt = nil, name = nil, position = nil, valid = false }
 local function findNearestPrompt()
     local char = LP.Character
     if not char then return nil, nil end
@@ -2641,6 +2628,12 @@ local function findNearestPrompt()
     if not plotsRoot then return nil, nil end
     local nearestPrompt, nearestDist, nearestName = nil, _huge, nil
     local rpos = root.Position
+    local cached = _nearestPromptCache
+    if cached.valid and cached.position and _tick() - cached.time < 0.12
+       and (rpos - cached.position).Magnitude < 4
+       and (not cached.prompt or cached.prompt.Parent) then
+        return cached.prompt, cached.name
+    end
     for _, plot in ipairs(plotsRoot:GetChildren()) do
         if isMyPlotByName(plot.Name) then continue end
         local pods = plot:FindFirstChild("AnimalPodiums")
@@ -2672,11 +2665,23 @@ local function findNearestPrompt()
             end)
         end
     end
+    _nearestPromptCache.time = _tick()
+    _nearestPromptCache.prompt = nearestPrompt
+    _nearestPromptCache.name = nearestName
+    _nearestPromptCache.position = rpos
+    _nearestPromptCache.valid = true
     return nearestPrompt, nearestName
 end
 
 local function executeSteal(prompt, podName)
     if isStealing then return end
+    if type(Steal.Data) == "table" then
+        pcall(function()
+            local mt = getmetatable(Steal.Data) or {}
+            mt.__mode = "k"
+            setmetatable(Steal.Data, mt)
+        end)
+    end
     if math.random(30) == 1 then
         for p in pairs(Steal.Data) do
             if not p.Parent then Steal.Data[p] = nil end
@@ -2873,6 +2878,8 @@ dropActive = false
 lastDropTime = 0
 lastMoveDir = _V3new(0,0,0)
 origFOV = nil
+origFOVMode = nil
+_customFovBound = false
 fovEnabled = false
 fovValue = 70
 customFovConn = nil
@@ -2884,7 +2891,6 @@ _aimbotConn = nil
 _prevAutoRotate = nil
 tpBatConn = nil
 tpBatPrevAutoRotate = nil
-tpBatHitCD = false
 TP_BAT_SWING_CD = 0.08
 tpBatFloatingButton = nil
 batV2FloatingButton = nil
@@ -3019,6 +3025,11 @@ do
     local mirrorTPPreviousY        = {}
     local mirrorTPLastTeleport     = 0
 
+    -- Keep cleanup in the same lexical scope as the per-player history table.
+    Players.PlayerRemoving:Connect(function(player)
+        mirrorTPPreviousY[player.UserId] = nil
+    end)
+
     local function mirrorTPAimbotActive()
         return (_G.AmbitiousNormalAimbotOn == true)
             or (_G.AmbitiousBatAimbotV2On == true)
@@ -3140,14 +3151,18 @@ function _G.AmbitiousSafeModeHoldingBrainrot()
         if v then
             if v:IsA("BoolValue")   and v.Value then return true end
             if v:IsA("ObjectValue") and v.Value then return true end
-            if v:IsA("StringValue") and v.Value ~= "" then return true end
+            if v:IsA("StringValue") then
+                local state = v.Value:lower()
+                if state == "true" or state == "1" or state == "carrying"
+                   or state == "holding" or state == "stealing" then return true end
+            end
         end
     end
     for _, child in ipairs(char:GetChildren()) do
         if child:IsA("Model") and child:FindFirstChildWhichIsA("BasePart", true) then
             local n = child.Name:lower()
-            if n:find("brainrot") or n:find("animal") or n:find("carry")
-               or n:find("grab") or n:find("steal") or n:find("hold") then
+            if n:find("brainrot", 1, true) or n:find("animal", 1, true)
+               or child:GetAttribute("IsCarried") == true then
                 return true
             end
         end
@@ -3191,17 +3206,20 @@ function _G.AmbitiousSafeModeTryStart()
     return true
 end
 
-_G.AmbitiousSafeModeMonitorStarted = _G.AmbitiousSafeModeMonitorStarted or false
-if not _G.AmbitiousSafeModeMonitorStarted then
-    _G.AmbitiousSafeModeMonitorStarted = true
-    RunService.Heartbeat:Connect(function()
-        if antiKickEnabled
-           and _G.AmbitiousSafeModeIsLocked
-           and _G.AmbitiousSafeModeIsLocked() then
-            _G.AmbitiousSafeModeForceStop("SAFE MODE LOCK")
-        end
-    end)
+-- Replace a previous monitor on script re-execution. A boolean-only guard
+-- would leave the old Heartbeat closure bound to stale local state.
+if _G.AmbitiousSafeModeMonitorConnection then
+    pcall(function() _G.AmbitiousSafeModeMonitorConnection:Disconnect() end)
+    _G.AmbitiousSafeModeMonitorConnection = nil
 end
+_G.AmbitiousSafeModeMonitorConnection = RunService.Heartbeat:Connect(function()
+    if antiKickEnabled
+       and _G.AmbitiousSafeModeIsLocked
+       and _G.AmbitiousSafeModeIsLocked() then
+        _G.AmbitiousSafeModeForceStop("SAFE MODE LOCK")
+    end
+end)
+_G.AmbitiousSafeModeMonitorStarted = true
 
 local AntiRagdollV1 = {}
 AntiRagdollV1.__index = AntiRagdollV1
@@ -3446,8 +3464,8 @@ local function protectAntiDieChar(char)
         end)
         if ok then AntiDieModule.originalByHumanoid[hum] = snapshot end
     end
-    hum.MaxHealth = math.huge
-    hum.Health    = math.huge
+    -- Keep health within the Humanoid's legitimate MaxHealth range.
+    hum.Health = hum.MaxHealth
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
         hum.BreakJointsOnDeath = false
@@ -3457,7 +3475,7 @@ local function protectAntiDieChar(char)
     table.insert(AntiDieModule.deathConns, hum.StateChanged:Connect(function(_, new)
         if not AntiDieModule.enabled then return end
         if new == Enum.HumanoidStateType.Dead then
-            hum.Health = math.huge
+            hum.Health = hum.MaxHealth
             pcall(function()
                 hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
             end)
@@ -3466,7 +3484,7 @@ local function protectAntiDieChar(char)
 
     table.insert(AntiDieModule.deathConns, hum:GetPropertyChangedSignal("Health"):Connect(function()
         if AntiDieModule.enabled and hum.Health < hum.MaxHealth then
-            hum.Health = math.huge
+            hum.Health = hum.MaxHealth
         end
     end))
 
@@ -3475,7 +3493,7 @@ local function protectAntiDieChar(char)
     end
     AntiDieModule.heartConn = RunService.Heartbeat:Connect(function()
         if AntiDieModule.enabled and hum and hum.Parent and hum.Health < hum.MaxHealth then
-            hum.Health = math.huge
+            hum.Health = hum.MaxHealth
         end
     end)
 end
@@ -3668,9 +3686,9 @@ do
     end)
 end
 
-local espHighlightCache = {}
-local espBillboardCache = {}
-local espTracerCache = {}
+espHighlightCache = espHighlightCache or {}
+espBillboardCache = espBillboardCache or {}
+espTracerCache = espTracerCache or {}
 local espConn = nil
 local _espLastRun = 0
 profileImageCache = {}
@@ -4052,7 +4070,6 @@ function _suppressBodyLock()
             task.cancel(_blRestoreTimer)
             _blRestoreTimer = nil
         end
-        _blSmoothRestore = false
     end
 end
 
@@ -4069,12 +4086,8 @@ function _unsuppressBodyLock(delayed)
         local function restore()
             _blRestoreTimer = nil
             if bodyLockEnabled then
-                _blSmoothRestore = true
                 startBodyLock()
                 if bodyLockSetVisual then bodyLockSetVisual(true) end
-                task.delay(0.5, function() _blSmoothRestore = false end)
-            else
-                _blSmoothRestore = false
             end
         end
         if delayed then
@@ -4084,6 +4097,21 @@ function _unsuppressBodyLock(delayed)
         end
     end
 end
+
+LP.CharacterAdded:Connect(function()
+    _blSuppressCount = 0
+    _blWasEnabled = false
+    if _blRestoreTimer then
+        pcall(task.cancel, _blRestoreTimer)
+        _blRestoreTimer = nil
+    end
+    task.defer(function()
+        if bodyLockEnabled then
+            startBodyLock()
+            if bodyLockSetVisual then bodyLockSetVisual(true) end
+        end
+    end)
+end)
 
 function setupSpeedIndicator(char)
     local head = char:WaitForChild("Head", 5)
@@ -4457,7 +4485,6 @@ function trySwing()
     pcall(function()
         local char = LP.Character
         if not char then return end
-        local currentTool = char:FindFirstChildOfClass("Tool")
         local bat = findBat()
         if bat then
             if bat.Parent ~= char then
@@ -4591,7 +4618,7 @@ end
 -- ═══════════════════════════════════════════════════════════════
 
 BAT_V2_SPEED           = BAT_V2_SPEED           or 55
-BAT_V2_HIT_DIST        = BAT_V2_HIT_DIST        or 13
+BAT_V2_HIT_DIST        = BAT_V2_HIT_DIST        or 4.5
 BAT_V2_LEAD_STUDS      = BAT_V2_LEAD_STUDS      or 3
 BAT_V2_BODY_LOCK_RANGE = BAT_V2_BODY_LOCK_RANGE or 60
 
@@ -5099,17 +5126,10 @@ local _tpBatHitCooldown = false
 local _tpBatMaxRange    = 100
 
 -- ──────────────────────────────────────────────────────────────
--- ANTI-DIE + LAGGER (integrados al TP BAT)
+-- ANTI-DIE (integrado al TP BAT); el lagger no soportado está deshabilitado.
 -- ──────────────────────────────────────────────────────────────
 local _tpBatAntiDieThread = nil
 local _tpBatLagThread     = nil
-local _tpBatLagChain      = nil
-local _tpBatLagPayload    = nil
-
-local TP_LAG_KBPS     = 12000
-local TP_LAG_INTERVAL = 0.15
-local TP_LAG_DEPTH    = 12
-local TP_LAG_REPS     = 800
 
 local function tpBatStartAntiDie()
     if _tpBatAntiDieThread then return end
@@ -5119,7 +5139,6 @@ local function tpBatStartAntiDie()
                 local char = LP.Character
                 if not char then task.wait(0.1) return end
                 local hum  = char:FindFirstChildOfClass("Humanoid")
-                local root = char:FindFirstChild("HumanoidRootPart")
                 if hum then
                     if hum.Health <= 0 then
                         hum.Health = hum.MaxHealth
@@ -5133,9 +5152,6 @@ local function tpBatStartAntiDie()
                         hum:ChangeState(Enum.HumanoidStateType.GettingUp)
                         hum:ChangeState(Enum.HumanoidStateType.Running)
                     end
-                end
-                if root and sethiddenproperty then
-                    pcall(sethiddenproperty, root, "PhysicsRepRootPart", nil)
                 end
                 if char then
                     for _, p in ipairs(char:GetDescendants()) do
@@ -5156,55 +5172,19 @@ local function tpBatStopAntiDie()
     end
 end
 
-local function tpBatBuildLagChain()
-    if _tpBatLagChain then return _tpBatLagChain end
-    local root = {}
-    local cur = root
-    for _ = 1, TP_LAG_DEPTH do
-        local n = {}
-        cur[1] = n
-        cur = n
-    end
-    _tpBatLagChain = root
-    return root
-end
-
-local function tpBatBuildLagPayload()
-    if _tpBatLagPayload then return _tpBatLagPayload end
-    local chain = tpBatBuildLagChain()
-    local payload = table.create(TP_LAG_REPS)
-    for i = 1, TP_LAG_REPS do payload[i] = chain end
-    _tpBatLagPayload = payload
-    return payload
-end
-
-local function tpBatSetKBPS(v)
-    pcall(function()
-        game:GetService("NetworkClient"):SetOutgoingKBPSLimit(v)
-    end)
+-- The former lag payload spammed SetPlayerBlockList with oversized nested
+-- tables. It is disabled because it is unsupported and can destabilize servers.
+local function tpBatSetKBPS(_v)
+    -- NetworkClient:SetOutgoingKBPSLimit is not a supported client method.
 end
 
 local function tpBatFireLagPayload()
-    pcall(function()
-        local rrs = game:GetService("RobloxReplicatedStorage")
-        if rrs and rrs:FindFirstChild("SetPlayerBlockList") then
-            rrs.SetPlayerBlockList:FireServer(tpBatBuildLagPayload())
-        end
-    end)
+    -- Deliberately no-op; never send server-disruptive payloads.
 end
 
 local function tpBatStartLagger()
-    if _tpBatLagThread then return end
-    _tpBatLagThread = task.spawn(function()
-        task.wait(0.05)
-        while batDesyncTpEnabled do
-            tpBatSetKBPS(TP_LAG_KBPS)
-            tpBatFireLagPayload()
-            task.wait(TP_LAG_INTERVAL)
-        end
-        tpBatSetKBPS(0)
-        _tpBatLagThread = nil
-    end)
+    -- Intentionally disabled together with the unsupported lag payload.
+    return
 end
 
 local function tpBatStopLagger()
@@ -5359,7 +5339,7 @@ function startAlvaroTP()
     tpBatStartLagger()
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
-    updateTpBatButtonWithAntiDie(true)
+    updateTpBatButtonVisual(true)
 end
 
 function stopAlvaroTP()
@@ -5386,7 +5366,7 @@ function stopAlvaroTP()
     end
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
-    updateTpBatButtonWithAntiDie(false)
+    updateTpBatButtonVisual(false)
 end
 
 function toggleAlvaroTP()
@@ -5475,7 +5455,7 @@ end
 
 function setTPBatVersion(_) end
 
-function updateTpBatButtonWithAntiDie(state)
+function updateTpBatButtonVisual(state)
     if batDesyncTpSetVisual then batDesyncTpSetVisual(state) end
 end
 
@@ -5840,7 +5820,12 @@ function runDropBrainrot()
 end
 
 function executeDropWithToggle(setVisual)
-    if dropActive then return end
+    if dropActive then
+        -- A caller may already have switched the UI on before discovering
+        -- that a drop is in progress. Keep the visual state in sync.
+        if setVisual then pcall(setVisual, false) end
+        return
+    end
     task.spawn(function()
         if setVisual then setVisual(true) end
         runDropBrainrot()
@@ -5937,14 +5922,17 @@ CUSTOM_FOV_BIND = "FictionHubCustomFOV"
 
 function enableCustomFov()
     local cam = workspace.CurrentCamera
-    if cam and origFOV == nil then origFOV = cam.FieldOfView end
+    if cam and origFOV == nil then
+        origFOV = cam.FieldOfView
+        pcall(function() origFOVMode = cam.FieldOfViewMode end)
+    end
     fovEnabled = true
     if cam then
         pcall(function() cam.FieldOfViewMode = Enum.FieldOfViewMode.Diagonal end)
         pcall(function() cam.FieldOfView = fovValue end)
     end
     if customFovConn then customFovConn:Disconnect(); customFovConn = nil end
-    pcall(function() RunService:UnbindFromRenderStep(CUSTOM_FOV_BIND) end)
+    if _customFovBound then return end
     local prio = 200
     pcall(function() prio = Enum.RenderPriority.Camera.Value + 10 end)
     local ok = pcall(function()
@@ -5956,7 +5944,9 @@ function enableCustomFov()
             end
         end)
     end)
-    if not ok then
+    if ok then
+        _customFovBound = true
+    else
         customFovConn = RunService.RenderStepped:Connect(function()
             if not fovEnabled then
                 if customFovConn then customFovConn:Disconnect(); customFovConn = nil end
@@ -5970,11 +5960,16 @@ end
 
 function disableCustomFov()
     fovEnabled = false
-    pcall(function() RunService:UnbindFromRenderStep(CUSTOM_FOV_BIND) end)
+    if _customFovBound then
+        pcall(function() RunService:UnbindFromRenderStep(CUSTOM_FOV_BIND) end)
+        _customFovBound = false
+    end
     if customFovConn then customFovConn:Disconnect(); customFovConn = nil end
     local cam = workspace.CurrentCamera
     if cam then
-        pcall(function() cam.FieldOfViewMode = Enum.FieldOfViewMode.Vertical end)
+        if origFOVMode ~= nil then
+            pcall(function() cam.FieldOfViewMode = origFOVMode end)
+        end
         pcall(function() cam.FieldOfView = origFOV or 70 end)
     end
 end
@@ -6442,6 +6437,8 @@ function disableAllAimbots()
     end
 end
 
+local stopBatCounterV2
+
 function stopAllBackgroundTasks()
     if movementLoop then movementLoop:Disconnect(); movementLoop = nil end
     if steppedConn then steppedConn:Disconnect(); steppedConn = nil end
@@ -6669,7 +6666,7 @@ do
     end
 
     local function stopCore()
-        if not NPC.running then return end
+        -- Clean stale state even if a previous execution already flipped running=false.
         NPC.running = false
 
         for _, c in ipairs(NPC.connections or {}) do pcall(function() c:Disconnect() end) end
@@ -6920,31 +6917,76 @@ end
 local _saveSettingsPending = false
 local _saveSettingsPendingJSON = nil
 local _saveSettingsLast = 0
+local _saveSettingsTask = nil
+
+local function cancelPendingSettingsSave()
+    if _saveSettingsTask then
+        pcall(task.cancel, _saveSettingsTask)
+        _saveSettingsTask = nil
+    end
+    _saveSettingsPending = false
+    _saveSettingsPendingJSON = nil
+end
+
 function saveAllSettings()
     if _isResetting then return true end
-    local config = buildConfigTable()
-    config.themeColor = normalizeShoxTheme(currentColorTheme)
-    local encodeOk, json = pcall(function() return HS:JSONEncode(ShoxHubToJSON(config)) end)
+
+    -- Keep config construction inside the protected block as well: malformed
+    -- runtime state must not break the UI callback that requested a save.
+    local encodeOk, json = pcall(function()
+        local config = buildConfigTable()
+        config.themeColor = normalizeShoxTheme(currentColorTheme)
+        return HS:JSONEncode(ShoxHubToJSON(config))
+    end)
     if not encodeOk or type(json) ~= "string" then return false end
-    if json == _lastSavedJSON then return true end
+    if json == _lastSavedJSON then
+        cancelPendingSettingsSave()
+        return true
+    end
+
     local now = os.clock()
     if now - _saveSettingsLast < 0.25 then
         _saveSettingsPending = true
-        _saveSettingsPendingJSON = json -- immutable snapshot for this save request
-        task.delay(0.3, function()
+        _saveSettingsPendingJSON = json -- latest immutable snapshot wins
+
+        -- Replace the previous timer instead of allowing multiple delayed writes.
+        if _saveSettingsTask then
+            pcall(task.cancel, _saveSettingsTask)
+            _saveSettingsTask = nil
+        end
+
+        local scheduledTask
+        scheduledTask = task.delay(0.3, function()
+            if _saveSettingsTask ~= scheduledTask then return end
+            _saveSettingsTask = nil
             if not _saveSettingsPending then return end
-            _saveSettingsPending = false
+
             local snapshotJson = _saveSettingsPendingJSON
+            _saveSettingsPending = false
             _saveSettingsPendingJSON = nil
             if _isResetting or type(snapshotJson) ~= "string" then return end
-            _saveSettingsLast = os.clock()
-            local okWrite = pcall(function() writefile(CONFIG_FILE, snapshotJson) end)
-            if okWrite then _lastSavedJSON = snapshotJson end
+
+            local okWrite = pcall(function()
+                writefile(CONFIG_FILE, snapshotJson)
+            end)
+            if okWrite then
+                _lastSavedJSON = snapshotJson
+                _saveSettingsLast = os.clock()
+            end
         end)
+        _saveSettingsTask = scheduledTask
         return true
     end
-    local success, err = pcall(function() writefile(CONFIG_FILE, json) end)
-    if success then _lastSavedJSON = json; _saveSettingsLast = now end
+
+    -- A fresh immediate write supersedes any older queued snapshot.
+    cancelPendingSettingsSave()
+    local success = pcall(function()
+        writefile(CONFIG_FILE, json)
+    end)
+    if success then
+        _lastSavedJSON = json
+        _saveSettingsLast = now
+    end
     return success
 end
 
@@ -7382,8 +7424,7 @@ end
 function resetToFactoryDefaults()
     _isResetting = true
     -- Cancel any deferred pre-reset snapshot so it cannot overwrite factory defaults.
-    _saveSettingsPending = false
-    _saveSettingsPendingJSON = nil
+    cancelPendingSettingsSave()
     local ok, err = pcall(function()
         stopAllBackgroundTasks()
         stopAutoSteal()
@@ -7561,12 +7602,12 @@ function getDefaultButtonPosition(btnName)
 end
 
 _G.AmbitiousHideMobileButtons = _G.AmbitiousHideMobileButtons == true
-_G.AmbitiousMobileHideList    = _G.AmbitiousMobileHideList or {}
+_G.AmbitiousMobileHideList    = type(_G.AmbitiousMobileHideList) == "table" and _G.AmbitiousMobileHideList or {}
 
 function _G.AmbitiousMobileHideIncluded(key)
-    local v = _G.AmbitiousMobileHideList[key]
-    if v == nil then return true end
-    return v == true
+    -- Missing entries are opt-out: enabling the master switch must not hide
+    -- every mobile control before the user has selected individual buttons.
+    return _G.AmbitiousMobileHideList[key] == true
 end
 
 function _G.AmbitiousApplyMobileButtonsHidden()
@@ -7620,14 +7661,13 @@ end
 
 local HIDE_BUTTONS_ITEMS = {
     { key = "drop",         label = "Drop BR" },
-    { key = "autoPlay",     label = "Auto Play" },
     { key = "tpBat",        label = "TP Bat" },
     { key = "aimbot",       label = "Bat Aimbot" },
     { key = "batV2",        label = "Bat Bypass" },
     { key = "instaReset",   label = "Insta Reset" },
-    { key = "antiTPBat",    label = "Anti TP Bat" },
-    { key = "float",        label = "Float" },
     { key = "tp",           label = "TP Down" },
+    { key = "autoLeft",     label = "Auto Left" },
+    { key = "autoRight",    label = "Auto Right" },
     { key = "carry",        label = "Carry Speed" },
     { key = "laggerNormal", label = "Lagger Normal" },
     { key = "laggerCarry",  label = "Lagger Carry" },
@@ -7774,9 +7814,9 @@ do
 end
 
 function buildGui()
-    local SILVER = Color3.fromRGB(180, 180, 190)
-    local SILVER_DARK = Color3.fromRGB(170, 170, 180)
-    local SILVER_LIGHT = Color3.fromRGB(220, 220, 230)
+    local SILVER = Color3.fromRGB(170, 255, 55)
+    local SILVER_DARK = Color3.fromRGB(135, 165, 105)
+    local SILVER_LIGHT = Color3.fromRGB(220, 255, 190)
     local BG = Color3.fromRGB(0,0,0)
     local BG2 = Color3.fromRGB(10,10,10)
     local ROW_BG = Color3.fromRGB(10,10,10)
@@ -7910,37 +7950,63 @@ function buildGui()
     miniTitleConstraint.MinTextSize = 16
 
     local slideTween = nil
+    local slideTweenGeneration = 0
     local mainOriginalPos = main.Position
     local isMainSliding = false
     main:GetPropertyChangedSignal("Position"):Connect(function()
         if main and main.Visible and not isMainSliding then mainOriginalPos = main.Position end
     end)
 
+    local function cancelSlideTween()
+        -- Invalidate completion callbacks before cancelling: Tween.Completed also
+        -- fires for Cancelled tweens, and an old callback must not undo a newer action.
+        slideTweenGeneration = slideTweenGeneration + 1
+        local previousTween = slideTween
+        slideTween = nil
+        if previousTween then pcall(function() previousTween:Cancel() end) end
+        return slideTweenGeneration
+    end
+
     showGui = function()
+        if not main or not miniBtn then return end
+        local generation = cancelSlideTween()
         isMainSliding = true
-        if slideTween then slideTween:Cancel() end
-        if not main then return end
         main.Visible = true
         miniBtn.Visible = false
         main.Position = UDim2.new(0, -GUI_W - 20, 0, 2)
-        slideTween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = mainOriginalPos})
-        slideTween:Play()
-        slideTween.Completed:Connect(function() slideTween = nil; isMainSliding = false end)
-    end
-
-    hideGui = function()
-        isMainSliding = true
-        if slideTween then slideTween:Cancel() end
-        if not main or not main.Visible then return end
-        local targetPos = UDim2.new(0, -GUI_W - 20, 0, 2)
-        slideTween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos})
-        slideTween:Play()
-        slideTween.Completed:Connect(function()
-            main.Visible = false
-            miniBtn.Visible = true
+        local tween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = mainOriginalPos})
+        slideTween = tween
+        tween.Completed:Connect(function(playbackState)
+            if generation ~= slideTweenGeneration or slideTween ~= tween then return end
             slideTween = nil
             isMainSliding = false
         end)
+        tween:Play()
+    end
+
+    hideGui = function()
+        if not main or not miniBtn then return end
+        if not main.Visible then
+            cancelSlideTween()
+            isMainSliding = false
+            miniBtn.Visible = true
+            return
+        end
+        local generation = cancelSlideTween()
+        isMainSliding = true
+        local targetPos = UDim2.new(0, -GUI_W - 20, 0, 2)
+        local tween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos})
+        slideTween = tween
+        tween.Completed:Connect(function(playbackState)
+            if generation ~= slideTweenGeneration or slideTween ~= tween then return end
+            slideTween = nil
+            if playbackState == Enum.PlaybackState.Completed then
+                main.Visible = false
+                miniBtn.Visible = true
+            end
+            isMainSliding = false
+        end)
+        tween:Play()
     end
 
     closeBtn.MouseButton1Click:Connect(hideGui)
@@ -7974,7 +8040,7 @@ function buildGui()
     tabContent.ClipsDescendants = true
     tabContent.ZIndex = 5
 
-    local tabs = {"Speed", "Combat", "Visual", "Settings", "Keybinds"}
+    local tabs = {"Combat", "Speed", "Visual", "Settings", "Keybinds"}
     tabButtons = {}
     contentPages = {}
 
@@ -9357,53 +9423,19 @@ function buildGui()
         end)
     end
 
-    mkSect(configPage, "UI Color Themes")
+    mkSect(configPage, "UI Theme")
     do
-        local themeNames = {"Black", "White", "Blue", "Lava", "Neutral"}
-        local row = mkRow(configPage, 72)
+        local row = mkRow(configPage, 42)
         local info = Instance.new("TextLabel", row)
         info.BackgroundTransparency = 1
-        info.Position = UDim2.new(0, 10, 0, 2)
-        info.Size = UDim2.new(1, -20, 0, 20)
+        info.Position = UDim2.new(0, 10, 0, 0)
+        info.Size = UDim2.new(1, -20, 1, 0)
         info.Font = Enum.Font.GothamSemibold
         info.TextSize = 12
         info.TextXAlignment = Enum.TextXAlignment.Left
-        info.TextColor3 = Color3.fromRGB(225, 225, 235)
-        info.Text = "Choose an accent color for the hub UI"
+        info.TextColor3 = Color3.fromRGB(170, 255, 55)
+        info.Text = "LIME  •  FIXED ACCENT"
         info.ZIndex = 8
-        local holder = Instance.new("Frame", row)
-        holder.BackgroundTransparency = 1
-        holder.Position = UDim2.new(0, 8, 0, 27)
-        holder.Size = UDim2.new(1, -16, 0, 36)
-        holder.ZIndex = 8
-        local layout = Instance.new("UIGridLayout", holder)
-        layout.CellSize = UDim2.new(0, 30, 0, 30)
-        layout.CellPadding = UDim2.new(0, 7, 0, 4)
-        layout.FillDirectionMaxCells = 5
-        for _, themeName in ipairs(themeNames) do
-            local swatch = Instance.new("TextButton", holder)
-            swatch.Name = "Theme_" .. themeName:gsub("%s+", "")
-            swatch.Size = UDim2.fromOffset(30, 30)
-            swatch.BackgroundColor3 = COLOR_THEMES[themeName]
-            swatch.BorderSizePixel = 0
-            swatch.Text = ""
-            swatch.AutoButtonColor = true
-            swatch.ZIndex = 9
-            Instance.new("UICorner", swatch).CornerRadius = UDim.new(1, 0)
-            local stroke = Instance.new("UIStroke", swatch)
-            stroke.Color = Color3.fromRGB(245, 245, 250)
-            stroke.Thickness = 1
-            stroke.Transparency = currentColorTheme == themeName and 0 or 0.7
-            swatch.MouseButton1Click:Connect(function()
-                applyColorTheme(themeName)
-                for _, other in ipairs(holder:GetChildren()) do
-                    if other:IsA("TextButton") then
-                        local outline = other:FindFirstChildOfClass("UIStroke")
-                        if outline then outline.Transparency = other == swatch and 0 or 0.7 end
-                    end
-                end
-            end)
-        end
     end
 
     mkSect(configPage, "Config Management")
@@ -9424,13 +9456,12 @@ function buildGui()
         local saveGrad = Instance.new("UIGradient", saveBtn)
         saveGrad.Rotation = 90
         saveGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(120, 120, 130)),
-            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(60, 60, 70)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(20, 20, 26)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(170, 255, 55)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(70, 115, 25)),
         })
 
         local saveStroke = Instance.new("UIStroke", saveBtn)
-        saveStroke.Color = Color3.fromRGB(200, 200, 215)
+        saveStroke.Color = Color3.fromRGB(170, 255, 55)
         saveStroke.Thickness = 1.5
         saveStroke.Transparency = 0.35
 
@@ -9484,13 +9515,12 @@ function buildGui()
         local resetGrad = Instance.new("UIGradient", resetPosBtn)
         resetGrad.Rotation = 90
         resetGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(80, 90, 110)),
-            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(45, 55, 75)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(18, 22, 32)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(65, 95, 35)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(18, 25, 14)),
         })
 
         local resetStroke = Instance.new("UIStroke", resetPosBtn)
-        resetStroke.Color = Color3.fromRGB(150, 175, 210)
+        resetStroke.Color = Color3.fromRGB(135, 185, 85)
         resetStroke.Thickness = 1.5
         resetStroke.Transparency = 0.35
 
@@ -10619,9 +10649,7 @@ local function executeBatCounterV2()
             batCounterV2Debounce = false
             return
         end
-        if sethiddenproperty then
-            sethiddenproperty(hrp, "PhysicsRepRootPart", attRoot)
-        end
+        -- Avoid the hidden PhysicsRepRootPart override; it is unsupported and detectable.
         local targetPos = attRoot.Position + _V3new(0, 0.9, 0)
         if (hrp.Position - targetPos).Magnitude > 8 then
             hrp.CFrame = _CFnew(targetPos)
@@ -10640,7 +10668,7 @@ local function executeBatCounterV2()
     end)
 end
 
-function stopBatCounterV2()
+stopBatCounterV2 = function()
     if batCounterV2Conn then
         batCounterV2Conn:Disconnect()
         batCounterV2Conn = nil
@@ -10789,10 +10817,10 @@ function updateUIFromLoaded()
     if batDesyncTpEnabled then
         if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
         if not _G.AlvaroTP.on then startBatDesyncTp() end
-        updateTpBatButtonWithAntiDie(true)
+        updateTpBatButtonVisual(true)
     else
         if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
-        updateTpBatButtonWithAntiDie(false)
+        updateTpBatButtonVisual(false)
     end
 
     if autoBatV2Enabled then
@@ -10954,9 +10982,8 @@ function updateUIFromLoaded()
     end
 end
 
-ShoxHubAutoTPDown = false
-ShoxHubAutoTPDownHeight = 20
-ShoxHubShowE01Warning = false
+-- Defaults were normalized in the CONFIG section above. Do not overwrite
+-- values loaded or supplied earlier in this execution here.
 ShoxHubAutoTPLastAt = 0
 ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
@@ -10975,11 +11002,29 @@ end)
 local function ShoxHubIsCarrying()
     local ShoxHubCharacter = LP.Character
     if not ShoxHubCharacter then return false end
-    for _, ShoxHubChild in ipairs(ShoxHubCharacter:GetChildren()) do
-        local ShoxHubName = ShoxHubChild.Name:lower()
-        if ShoxHubName:find("brainrot", 1, true) or ShoxHubName:find("animal", 1, true) or ShoxHubName:find("carry", 1, true) or ShoxHubName:find("steal", 1, true) then return true end
+
+    local okPlayer, playerStealing = pcall(function()
+        return LP:GetAttribute("Stealing")
+    end)
+    if okPlayer and playerStealing == true then return true end
+
+    local okCharacter, characterStealing = pcall(function()
+        return ShoxHubCharacter:GetAttribute("Stealing")
+    end)
+    if okCharacter and characterStealing == true then return true end
+
+    -- Use explicit carry markers; broad name fragments such as "animal" or
+    -- "steal" can match unrelated accessories and trigger a false warning.
+    for _, markerName in ipairs({"Carrying", "IsCarrying", "Grabbed", "Holding", "StealHold", "HasGrab"}) do
+        local marker = ShoxHubCharacter:FindFirstChild(markerName)
+        if marker then
+            if (marker:IsA("BoolValue") and marker.Value == true)
+                or (marker:IsA("ObjectValue") and marker.Value ~= nil)
+                or (marker:IsA("StringValue") and marker.Value ~= "") then
+                return true
+            end
+        end
     end
-    if LP:GetAttribute("Stealing") == true then return true end
     return false
 end
 
@@ -11431,75 +11476,82 @@ end
 
 local _respawnQueue = 0
 LP.CharacterAdded:Connect(function(char)
-    _respawnQueue = _respawnQueue + 1
-    local myId = _respawnQueue
+    local ok, err = xpcall(function()
+        _respawnQueue = _respawnQueue + 1
+        local myId = _respawnQueue
 
-    if stealConnection then stealConnection:Disconnect(); stealConnection = nil end
-    isStealing = false
-    stopAutoLeft()
-    stopAutoRight()
-    stopBatCounter()
-    stopBatCounterV2()
-    stopMedusaCounter()
-    if not _tpBatUnwalkForced then stopUnwalk() end
-    stopDropBrainrot()
-    if autoBatEnabled then disableAutoBat() end
-    if batDesyncTpEnabled then stopBatDesyncTp() end
-    if autoBatV2Enabled then disableBatV2() end
-    if bodyLockEnabled then stopBodyLock() end
-
-    local deadline = _tick() + 5
-    while (not char.Parent) or (not char:FindFirstChild("HumanoidRootPart"))
-          or (not char:FindFirstChildOfClass("Humanoid")) do
-        if _tick() > deadline then return end
-        if myId ~= _respawnQueue then return end
-        task.wait(0.05)
-    end
-
-    -- Velocity metatable hooks were intentionally removed; no respawn hook setup is needed.
-    setupMovementAndIndicators(char)
-
-    if antiRagdollMode == "v1" then AntiRagdollV1.start()
-    elseif antiRagdollMode == "v2" then startAntiRagdollV2() end
-
-    if AntiDieModule.enabled then task.defer(function() activateOnCharacter(char) end) end
-    if CONFIG.AUTO_STEAL_ENABLED then pcall(startAutoSteal) end
-    if batDesyncTpEnabled then task.defer(startBatDesyncTp) end
-    if autoBatV2Enabled then task.defer(enableBatV2) end
-    if bodyLockEnabled and _blSuppressCount == 0 then startBodyLock() end
-
-    if medusaCounterEnabled then
-        setupMedusaCounter(char)
-        if setMedusaVisual then setMedusaVisual(true) end
-    else
+        if stealConnection then stealConnection:Disconnect(); stealConnection = nil end
+        isStealing = false
+        stopAutoLeft()
+        stopAutoRight()
+        stopBatCounter()
+        stopBatCounterV2()
         stopMedusaCounter()
-        if setMedusaVisual then setMedusaVisual(false) end
-    end
+        if not _tpBatUnwalkForced then stopUnwalk() end
+        stopDropBrainrot()
+        if autoBatEnabled then disableAutoBat() end
+        if batDesyncTpEnabled then stopBatDesyncTp() end
+        if autoBatV2Enabled then disableBatV2() end
+        if bodyLockEnabled then stopBodyLock() end
 
-    if batCounterEnabled then startBatCounter() end
-    if batCounterV2Enabled then startBatCounterV2() end
-    if unwalkEnabled and not _tpBatUnwalkForced then startUnwalk() end
+        local deadline = _tick() + 5
+        while (not char.Parent) or (not char:FindFirstChild("HumanoidRootPart"))
+              or (not char:FindFirstChildOfClass("Humanoid")) do
+            if _tick() > deadline then return end
+            if myId ~= _respawnQueue then return end
+            task.wait(0.05)
+        end
 
-    if currentAnimPack ~= "Off" then
-        task.wait(0.3)
-        startAnimPack(currentAnimPack)
-    end
+        -- Velocity metatable hooks were intentionally removed; no respawn hook setup is needed.
+        setupMovementAndIndicators(char)
 
-    updateProgressBarVisibility()
-    refreshSpeedModeLabel()
+        if antiRagdollMode == "v1" then AntiRagdollV1.start()
+        elseif antiRagdollMode == "v2" then startAntiRagdollV2() end
 
-    pcall(function() applyOutfitByIndex(currentOutfitIndex) end)
-    if outfitSelectorLabel then
-        outfitSelectorLabel.Text = OUTFITS[currentOutfitIndex].label
-    end
+        if AntiDieModule.enabled then task.defer(function() activateOnCharacter(char) end) end
+        if CONFIG.AUTO_STEAL_ENABLED then pcall(startAutoSteal) end
+        if batDesyncTpEnabled then task.defer(startBatDesyncTp) end
+        if autoBatV2Enabled then task.defer(enableBatV2) end
+        if bodyLockEnabled and _blSuppressCount == 0 then startBodyLock() end
 
-    if katanaSkinEnabled then
-        task.wait(1)
-        pcall(function() KatanaSkin.ApplySkin("KATANA") end)
-    end
-    if minecraftBatSkinEnabled then
-        task.wait(0.6)
-        pcall(function() MinecraftBatSkin.Apply() end)
+        if medusaCounterEnabled then
+            setupMedusaCounter(char)
+            if setMedusaVisual then setMedusaVisual(true) end
+        else
+            stopMedusaCounter()
+            if setMedusaVisual then setMedusaVisual(false) end
+        end
+
+        if batCounterEnabled then startBatCounter() end
+        if batCounterV2Enabled then startBatCounterV2() end
+        if unwalkEnabled and not _tpBatUnwalkForced then startUnwalk() end
+
+        if currentAnimPack ~= "Off" then
+            task.wait(0.3)
+            startAnimPack(currentAnimPack)
+        end
+
+        updateProgressBarVisibility()
+        refreshSpeedModeLabel()
+
+        pcall(function() applyOutfitByIndex(currentOutfitIndex) end)
+        if outfitSelectorLabel then
+            outfitSelectorLabel.Text = OUTFITS[currentOutfitIndex].label
+        end
+
+        if katanaSkinEnabled then
+            task.wait(1)
+            pcall(function() KatanaSkin.ApplySkin("KATANA") end)
+        end
+        if minecraftBatSkinEnabled then
+            task.wait(0.6)
+            pcall(function() MinecraftBatSkin.Apply() end)
+        end
+    end, function(message)
+        return tostring(message)
+    end)
+    if not ok then
+        warn("[ShoxHub] CharacterAdded setup failed: " .. tostring(err))
     end
 end)
 
