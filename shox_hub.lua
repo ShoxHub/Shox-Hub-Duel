@@ -1,7 +1,10 @@
-if _G.BloodHoundsRunning then
-    warn("[ShoxHub] Script läuft bereits. Bitte die laufende Instanz zuerst entladen.")
+_G.ShoxHub = _G.ShoxHub or {}
+local ShoxHubState = _G.ShoxHub
+if ShoxHubState.Running or _G.BloodHoundsRunning then
+    warn("[ShoxHub] Eine Instanz läuft bereits. Bitte zuerst die bestehende Instanz beenden, bevor du erneut ausführst.")
     return
 end
+ShoxHubState.Running = true
 _G.BloodHoundsRunning = true
 
 repeat task.wait() until game:IsLoaded()
@@ -18,7 +21,6 @@ local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
 local ShoxIntro = {
     Running = true,
-    Token = 0,
     Letters = {"S", "H", "O", "X", "H", "U", "B"},
     Beats = {
         {0.05, 1, "a"}, {0.52, 1, "b"}, {0.84, 0.6}, {1.28, 0.9},
@@ -39,6 +41,7 @@ local function shoxIntroMake(className, props, parent)
 end
 
 local function shoxIntroTween(obj, props, duration, style, direction)
+    if not obj or not obj.Parent then return nil end
     local tween = ShoxHubTweenService:Create(
         obj,
         TweenInfo.new(duration or 0.25, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out),
@@ -56,7 +59,6 @@ local function shoxIntroParent()
 end
 
 local function shoxIntroFinish(stopSound)
-    if not ShoxIntro.Running then return end
     ShoxIntro.Running = false
     if ShoxIntroHeartbeat then ShoxIntroHeartbeat:Disconnect(); ShoxIntroHeartbeat = nil end
     if ShoxIntroSound then
@@ -125,15 +127,34 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    local accent = Color3.fromRGB(120, 200, 255)
-    local subColor = Color3.fromRGB(170, 205, 235)
+    local introThemes = {
+        Black = Color3.fromRGB(175, 175, 190),
+        White = Color3.fromRGB(55, 65, 80),
+        Blue = Color3.fromRGB(35, 125, 255),
+        Lava = Color3.fromRGB(255, 83, 35),
+        Neutral = Color3.fromRGB(125, 130, 140),
+    }
+    local savedIntroTheme = "Neutral"
+    pcall(function()
+        if isfile and readfile and isfile("FictionHub.json") then
+            local cfg = ShoxHubHttpService:JSONDecode(readfile("FictionHub.json"))
+            if type(cfg) == "table" and introThemes[cfg.themeColor] then savedIntroTheme = cfg.themeColor end
+        end
+    end)
+    local accent = introThemes[savedIntroTheme]
+    local subColor = savedIntroTheme == "White" and Color3.fromRGB(75, 80, 95) or Color3.fromRGB(190, 200, 215)
+    local introParent = shoxIntroParent()
+    pcall(function()
+        local old = introParent:FindFirstChild("ShoxHubIntro") or introParent:FindFirstChild("ShoxCodeSniperIntro")
+        if old then old:Destroy() end
+    end)
     local gui = shoxIntroMake("ScreenGui", {
-        Name = "ShoxCodeSniperIntro",
+        Name = "ShoxHubIntro",
         ResetOnSpawn = false,
         IgnoreGuiInset = true,
-        DisplayOrder = 1000005,
+        DisplayOrder = 2000005,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-    }, shoxIntroParent())
+    }, introParent)
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
     ShoxIntroGui = gui
 
@@ -332,7 +353,7 @@ task.spawn(function()
 end)
 
 
--- Intro is self-cleaning; the main FictionHub UI remains unchanged below.
+-- Intro is self-cleaning; the existing ShoxHub UI remains unchanged below.
 -- ============================================================
 -- FIN INTRO
 -- ============================================================
@@ -375,9 +396,12 @@ end
 local function waitForCharReady(char, timeout)
     timeout = timeout or 5
     local deadline = _tick() + timeout
-    while (not char) or (not char.Parent)
-          or (not char:FindFirstChild("HumanoidRootPart"))
-          or (not char:FindFirstChildOfClass("Humanoid")) do
+    while true do
+        if (not char) or (not char.Parent) then char = LP.Character end
+        local ready = char and char.Parent
+            and char:FindFirstChild("HumanoidRootPart")
+            and char:FindFirstChildOfClass("Humanoid")
+        if ready and (char == LP.Character or not LP.Character) then break end
         if _tick() > deadline then return false end
         task.wait(0.05)
     end
@@ -777,6 +801,9 @@ local COLOR_THEMES = {
 
 currentColorTheme = "Neutral"
 selectedColor = COLOR_THEMES["Neutral"]
+local function normalizeShoxTheme(name)
+    return (type(name) == "string" and COLOR_THEMES[name]) and name or "Neutral"
+end
 
 function getThemeColor() return selectedColor end
 
@@ -795,19 +822,20 @@ end
 function updateAllUIThemeColors(color)
     local now = _tick()
     if color == _lastThemeColor and now - _lastThemeUpdate < 0.1 then return end
+    local oldColor = _lastThemeColor
     _lastThemeUpdate = now
     _lastThemeColor = color
 
     if progressFill then
-        progressFill.BackgroundColor3 = Color3.fromRGB(210, 210, 220)
+        progressFill.BackgroundColor3 = color
         local fs = progressFill:FindFirstChild("FillStroke")
-        if fs then fs.Color = Color3.fromRGB(210, 210, 220) end
+        if fs then fs.Color = color end
         local grad = progressFill:FindFirstChildOfClass("UIGradient")
         if grad then
             grad.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(150, 150, 160)),
-                ColorSequenceKeypoint.new(0.50, Color3.fromRGB(210, 210, 220)),
-                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(230, 230, 235)),
+                ColorSequenceKeypoint.new(0.00, color:Lerp(Color3.new(1,1,1), 0.25)),
+                ColorSequenceKeypoint.new(0.50, color),
+                ColorSequenceKeypoint.new(1.00, color:Lerp(Color3.new(1,1,1), 0.55)),
             })
         end
     end
@@ -817,35 +845,31 @@ function updateAllUIThemeColors(color)
             local fr = pr:FindFirstChild("FillRegion")
             if fr then
                 local s = fr:FindFirstChild("FillRegionStroke")
-                if s then s.Color = Color3.fromRGB(210, 210, 220) end
+                if s then s.Color = color end
             end
         end
         local discordLabel = pbFrame:FindFirstChild("DiscordLabel")
-        if discordLabel then discordLabel.TextColor3 = Color3.fromRGB(210, 210, 220) end
+        if discordLabel then discordLabel.TextColor3 = color end
         local fpsNeon = pbFrame:FindFirstChild("FPSNeon")
-        if fpsNeon then fpsNeon.TextColor3 = Color3.fromRGB(210, 210, 220) end
+        if fpsNeon then fpsNeon.TextColor3 = color end
     end
     local function searchAndUpdateText(parent)
         for _, child in ipairs(parent:GetDescendants()) do
             if child:IsA("TextLabel") then
                 if child.Text:find("discord.gg") or child.Text:find("Spd:") or child.Name == "DiscordText" or
                    child.Name == "FictionHubSpeedIndicator" or child.Text:find("FPS") or child.Text:find("speed") then
-                    child.TextColor3 = Color3.fromRGB(210, 210, 220)
+                    child.TextColor3 = color
                 end
             end
             if child:IsA("UIStroke") then
-                if child.Color == Color3.fromRGB(95, 95, 105) or child.Color == Color3.fromRGB(180, 180, 190) then
-                    child.Color = color
-                end
+                if oldColor and child.Color == oldColor then child.Color = color end
             elseif child:IsA("Frame") or child:IsA("TextButton") or child:IsA("ImageButton") then
                 local old = child.BackgroundColor3
-                if old == Color3.fromRGB(95, 95, 105) or old == Color3.fromRGB(180, 180, 190)
-                    or old == Color3.fromRGB(120, 120, 130) then
+                if (oldColor and old == oldColor) or old == Color3.fromRGB(120, 120, 130) then
                     child.BackgroundColor3 = color
                 end
-            elseif child:IsA("TextButton") or child:IsA("ImageButton") then
-                if child.TextColor3 == Color3.fromRGB(95, 95, 105) or child.TextColor3 == Color3.fromRGB(180, 180, 190) then
-                    child.TextColor3 = color
+                if child:IsA("TextButton") then
+                    if oldColor and child.TextColor3 == oldColor then child.TextColor3 = color end
                 end
             end
         end
@@ -858,7 +882,7 @@ function updateAllUIThemeColors(color)
         paintFloatingBtn(batV2FloatingButton:FindFirstChild("Frame"), autoBatV2Enabled)
     end
     for _, tab in ipairs(tabButtons or {}) do
-        if tab.TextColor3 == Color3.fromRGB(180, 180, 190) or tab.TextColor3 == Color3.fromRGB(95, 95, 105) then tab.TextColor3 = color end
+        if tab and tab.Parent and oldColor and tab.TextColor3 == oldColor then tab.TextColor3 = color end
     end
     for _, hl in pairs(espHighlightCache) do
         if hl then hl.FillColor = color; hl.OutlineColor = color end
@@ -883,14 +907,14 @@ function updateAllUIThemeColors(color)
         local titleFrame = main:FindFirstChild("TitleFrame")
         if titleFrame then
             for _, child in ipairs(titleFrame:GetDescendants()) do
-                if child:IsA("UIStroke") and (child.Color == Color3.fromRGB(95, 95, 105) or child.Color == Color3.fromRGB(180, 180, 190)) then
+                if child:IsA("UIStroke") and (child.Color == color or child.Color == color) then
                     child.Color = color
                 end
             end
         end
     end
     if miniBtn then
-        miniBtn.TextColor3 = Color3.fromRGB(210, 210, 220)
+        miniBtn.TextColor3 = color
     end
 
     local pGui = LP:FindFirstChild("PlayerGui")
@@ -975,6 +999,20 @@ local function findAtt(char, name)
     end
 end
 
+local _shoxOriginalAccessoryTransparency = setmetatable({}, {__mode = "k"})
+local function restoreNoOutfitAccessoryTransparency(char)
+    if not char then return end
+    for accessory, transparency in pairs(_shoxOriginalAccessoryTransparency) do
+        if accessory and accessory.Parent == char then
+            local handle = accessory:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") and transparency ~= nil then
+                pcall(function() handle.Transparency = transparency end)
+            end
+            _shoxOriginalAccessoryTransparency[accessory] = nil
+        end
+    end
+end
+
 local function applyNoOutfit(char)
     if not char then char = LP.Character end
     if not char then return end
@@ -1015,7 +1053,12 @@ local function applyNoOutfit(char)
     for _, a in ipairs(char:GetChildren()) do
         if a:IsA("Accessory") then
             local h = a:FindFirstChild("Handle")
-            if h then h.Transparency = 0 end
+            if h and h:IsA("BasePart") then
+                if _shoxOriginalAccessoryTransparency[a] == nil then
+                    _shoxOriginalAccessoryTransparency[a] = h.Transparency
+                end
+                h.Transparency = 0
+            end
         end
     end
 end
@@ -1196,6 +1239,7 @@ function applyOutfitByIndex(index)
     if not cfg then return end
     local char = LP.Character
     if not char then return end
+    if index ~= #OUTFITS then restoreNoOutfitAccessoryTransparency(char) end
     if cfg.customApply then
         cfg.customApply(char)
         if outfitSelectorLabel then outfitSelectorLabel.Text = cfg.label end
@@ -1307,9 +1351,9 @@ antiLagEnabled = false
 removeAccessoriesEnabled = false
 stretchEnabled = false
 stretchFOV = 120
-uiLocked = true
+uiLocked = false
 editModeEnabled = false
-mobileButtonsLocked = true
+mobileButtonsLocked = false
 uiScaleValue = 78
 espEnabled = false
 
@@ -1325,6 +1369,7 @@ infJumpMode    = "HOLD"
 bodyLockEnabled = false
 bodyLockRange = 20
 bodyLockRangeBox = nil
+local bodyLockSetVisual = nil
 _bodyLockConn = nil
 _blSuppressCount = 0
 _blWasEnabled = false
@@ -1365,11 +1410,7 @@ _G.AceAntiBypassAimbotOn          = _G.AceAntiBypassAimbotOn or false
 _G.AceNormalAimbotOn              = _G.AceNormalAimbotOn or false
 _G.AceCurrentSpeedMode            = _G.AceCurrentSpeedMode or "Normal"
 
-_G.AceAntiBypassAimbot = _G.AceAntiBypassAimbot or {
-    conn           = nil,
-    swingCooldown  = false,
-    prevAutoRotate = nil,
-}
+
 
 _G.AceAntiBypassSlapList = _G.AceAntiBypassSlapList or {
     "Bat", "Slap", "Iron Slap", "Gold Slap", "Diamond Slap",
@@ -2092,9 +2133,13 @@ end)
 
 _G.AmbitiousNormalInfJump = _G.AmbitiousNormalInfJump or {
     holdPressed = false, holdActive = false,
-    controllerActive = false, mobilePressed = false,
-    mobileActive = false, hooked = {}
+    controllerActive = false, mobilePressed = false, mobileActive = false,
+    hooked = setmetatable({}, {__mode = "k"})
 }
+_G.AmbitiousNormalInfJump.hooked = setmetatable(_G.AmbitiousNormalInfJump.hooked or {}, {__mode = "k"})
+for hookedButton in pairs(_G.AmbitiousNormalInfJump.hooked) do
+    if not hookedButton or not hookedButton.Parent then _G.AmbitiousNormalInfJump.hooked[hookedButton] = nil end
+end
 
 function _G._jumpEnsureProxy()
     local char = LP.Character
@@ -2212,8 +2257,33 @@ do
         for _, obj in ipairs(pg:GetDescendants()) do
             _G.AmbitiousHookNormalInfMobileJumpButton(obj)
         end
+        LP.ChildAdded:Connect(function(child)
+            if child:IsA("PlayerGui") then
+                task.defer(function()
+                    for _, obj in ipairs(child:GetDescendants()) do
+                        _G.AmbitiousHookNormalInfMobileJumpButton(obj)
+                    end
+                    child.DescendantAdded:Connect(function(obj)
+                        task.defer(_G.AmbitiousHookNormalInfMobileJumpButton, obj)
+                    end)
+                end)
+            end
+        end)
         pg.DescendantAdded:Connect(function(obj)
             task.defer(_G.AmbitiousHookNormalInfMobileJumpButton, obj)
+        end)
+        task.spawn(function()
+            while pg and pg.Parent do
+                for hooked in pairs(_G.AmbitiousNormalInfJump.hooked) do
+                    if not hooked or not hooked.Parent then
+                        _G.AmbitiousNormalInfJump.hooked[hooked] = nil
+                    end
+                end
+                for _, obj in ipairs(pg:GetDescendants()) do
+                    _G.AmbitiousHookNormalInfMobileJumpButton(obj)
+                end
+                task.wait(5)
+            end
         end)
     end
 end
@@ -2263,63 +2333,7 @@ function getActiveMoveSpeed()
     else return NS end
 end
 
-local _velChecked = {}
-local _hookedVelParts = {}
-
-local function _setupVelChecked(char)
-    _velChecked = {}
-    if not char then return end
-    local hrp = char:WaitForChild("HumanoidRootPart", 5)
-    if hrp then _velChecked[hrp] = true end
-    return hrp
-end
-
-local _hookVelSupported = nil
-local function _hookVelHRP(hrp)
-    if not hrp or _hookedVelParts[hrp] then return end
-    if _hookVelSupported == false then return end
-    if _hookVelSupported == nil then
-        _hookVelSupported = (type(getrawmetatable) == "function")
-            and (type(setreadonly) == "function")
-            and (type(newcclosure) == "function")
-            and (type(checkcaller) == "function")
-    end
-    if not _hookVelSupported then return end
-    _hookedVelParts[hrp] = true
-    local ok = pcall(function()
-        local mt = getrawmetatable(hrp)
-        if not mt then return end
-        setreadonly(mt, false)
-        local originalVelIndex = rawget(mt, "__index")
-        mt.__index = newcclosure(function(self, key)
-            if not checkcaller() and _velChecked[self]
-               and (key == "AssemblyLinearVelocity" or key == "Velocity") then
-                local real
-                if type(originalVelIndex) == "function" then
-                    real = originalVelIndex(self, key)
-                elseif type(originalVelIndex) == "table" then
-                    real = originalVelIndex[key]
-                end
-                if real and real.Magnitude > 20 then return real.Unit * 20 end
-                return real
-            end
-            if type(originalVelIndex) == "function" then
-                return originalVelIndex(self, key)
-            elseif type(originalVelIndex) == "table" then
-                return originalVelIndex[key]
-            end
-            return nil
-        end)
-        setreadonly(mt, true)
-    end)
-    if not ok then _hookVelSupported = false end
-end
-
-if LP.Character then
-    -- Keep velocity tracking metadata, but do not intercept Roblox's velocity reads.
-    -- The old 20-stud/s clamp could interfere with the Humanoid jump controller.
-    _setupVelChecked(LP.Character)
-end
+-- No velocity metatable hooks are installed; Roblox jump/physics velocity stays native.
 
 local function _isRagdollState(hum)
     if not hum then return true end
@@ -2932,10 +2946,7 @@ function kbMatch(entry, kc)
     return kc and (kc == entry.kb or (entry.gp and kc == entry.gp))
 end
 
-function resetProgressBar()
-    if progressPct then progressPct.Text = "0%" end
-    if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
-end
+
 
 local function doTpDown()
     pcall(function()
@@ -3944,8 +3955,10 @@ local function _bodyLockTick()
     if hum.AutoRotate then hum.AutoRotate = false end
 
     local targetVelocity = target.AssemblyLinearVelocity
-    local predictTime = _clamp(targetVelocity.Magnitude / 80, 0.08, 0.35)
-    local predicted = target.Position + targetVelocity * predictTime
+    local speed = math.min(targetVelocity.Magnitude, 55)
+    local smoothedTargetVelocity = targetVelocity.Magnitude > 55 and targetVelocity.Unit * speed or targetVelocity
+    local predictTime = _clamp(smoothedTargetVelocity.Magnitude / 100, 0.06, 0.25)
+    local predicted = target.Position + smoothedTargetVelocity * predictTime
     local flatTarget = _V3new(predicted.X, root.Position.Y, predicted.Z)
     local flatDirection = flatTarget - root.Position
     if flatDirection.Magnitude <= 0.1 then return end
@@ -4009,6 +4022,8 @@ function _unsuppressBodyLock(delayed)
                 startBodyLock()
                 if bodyLockSetVisual then bodyLockSetVisual(true) end
                 task.delay(0.5, function() _blSmoothRestore = false end)
+            else
+                _blSmoothRestore = false
             end
         end
         if delayed then
@@ -4376,7 +4391,7 @@ function stopAimbotAdapt()
     end
     if root then
         local velocity = root.AssemblyLinearVelocity
-        root.AssemblyLinearVelocity = _V3new(velocity.X, math.max(velocity.Y, 0), velocity.Z)
+        root.AssemblyLinearVelocity = _V3new(velocity.X, velocity.Y, velocity.Z)
         root.AssemblyAngularVelocity = _V3zero
     end
     _prevAutoRotate = nil
@@ -4577,7 +4592,7 @@ end
 
 local function bbNearestTarget(root)
     local nearest, nearestDistance = nil, math.huge
-    for _, candidate in ipairs(Players:GetPlayers()) do
+    for _, candidate in ipairs(_GetPlayersCached()) do
         if candidate ~= LP and candidate.Character then
             local targetCharacter = candidate.Character
             local targetRoot     = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
@@ -4593,13 +4608,12 @@ local function bbNearestTarget(root)
     return nearest
 end
 
-local function bbRotateRoot(root, direction)
+local function bbRotateRoot(root, direction, dt)
     if direction.Magnitude < 0.01 then return end
-    local axis  = root.CFrame.LookVector:Cross(direction.Unit)
+    local axis = root.CFrame.LookVector:Cross(direction.Unit)
     local angle = math.asin(math.clamp(axis.Magnitude, -1, 1))
-    root.AssemblyAngularVelocity = axis.Magnitude > 0.01
-        and axis.Unit * angle * 80
-        or  Vector3.zero
+    local angular = axis.Magnitude > 0.01 and axis.Unit * math.min(angle * 10, 8) or Vector3.zero
+    root.AssemblyAngularVelocity = root.AssemblyAngularVelocity:Lerp(angular, math.min(math.max((tonumber(dt) or (1/60)) * 15, 0), 1))
 end
 
 local function bbSamplePing()
@@ -4616,12 +4630,19 @@ local function bbSamplePing()
 end
 
 BB.PingLoopStarted = BB.PingLoopStarted or false
-if not BB.PingLoopStarted then
+BB.PingLoopGeneration = BB.PingLoopGeneration or 0
+local function bbStartPingLoop()
+    if BB.PingLoopStarted then return end
+    BB.PingLoopGeneration = BB.PingLoopGeneration + 1
+    local generation = BB.PingLoopGeneration
     BB.PingLoopStarted = true
     task.spawn(function()
-        while true do
+        while BB.PingLoopStarted and BB.Enabled and generation == BB.PingLoopGeneration do
             pcall(bbSamplePing)
             task.wait(0.5)
+        end
+        if generation == BB.PingLoopGeneration then
+            BB.PingLoopStarted = false
         end
     end)
 end
@@ -4633,6 +4654,8 @@ function BB.StopBodyLock()  end
 function BB.Stop()
     local Z = BB.Z
     BB.Enabled = false
+    BB.PingLoopGeneration = (BB.PingLoopGeneration or 0) + 1
+    BB.PingLoopStarted = false
     if BB.Connection then
         BB.Connection:Disconnect()
         BB.Connection = nil
@@ -4659,6 +4682,7 @@ function BB.Start()
     if not humanoid or not root then return end
 
     BB.Enabled = true
+    bbStartPingLoop()
     humanoid.AutoRotate = false
     if not BB.BodyLockSuppressed then
         BB.BodyLockSuppressed = true
@@ -4772,7 +4796,7 @@ function BB.Start()
         end
 
         local toTarget = predicted - root.Position
-        bbRotateRoot(root, toTarget)
+        bbRotateRoot(root, toTarget, dt)
 
         if (targetPos - root.Position).Magnitude <= ZCFG.ACTIVATE_DISTANCE
         and tick() - Z.lastActivationTime >= 0.3 then
@@ -4930,6 +4954,7 @@ batDesyncTpEnabled = false
 batDesyncTpConn    = nil
 batDesyncTpSetVisual = nil
 local _tpBatUnwalkForced = false
+local _tpBatBodyLockSuppressed = false
 
 -- Compat externa (UI, safe mode, teclas, carga de config, etc.)
 _G.AlvaroTP = _G.AlvaroTP or {
@@ -5067,25 +5092,36 @@ end
 local function tpBatGetBat()
     local character = LP.Character
     if not character then return nil end
-    for _, tool in ipairs(character:GetChildren()) do
-        if tool:IsA("Tool") then
-            local name = tool.Name:lower()
-            if name:find("bat") or name:find("slap") then return tool end
+    local function score(tool)
+        if not tool or not tool:IsA("Tool") then return 0 end
+        local name = tool.Name:lower()
+        if name == "bat" then return 100 end
+        if name:find("bat", 1, true) then return 90 end
+        if name:find("slap", 1, true) then return 70 end
+        return 0
+    end
+    local best, bestScore = nil, 0
+    local okChar, equipped = pcall(function() return character:GetChildren() end)
+    if okChar then
+        for _, tool in ipairs(equipped) do
+            local candidateScore = score(tool)
+            if candidateScore > bestScore then best, bestScore = tool, candidateScore end
         end
     end
+    if best then return best end
     local backpack = LP:FindFirstChild("Backpack")
     if not backpack then return nil end
-    for _, tool in ipairs(backpack:GetChildren()) do
-        if tool:IsA("Tool") then
-            local name = tool.Name:lower()
-            if name:find("bat") or name:find("slap") then
-                local humanoid = character:FindFirstChildOfClass("Humanoid")
-                if humanoid then pcall(function() humanoid:EquipTool(tool) end) end
-                return tool
-            end
-        end
+    local okBackpack, tools = pcall(function() return backpack:GetChildren() end)
+    if not okBackpack then return nil end
+    for _, tool in ipairs(tools) do
+        local candidateScore = score(tool)
+        if candidateScore > bestScore then best, bestScore = tool, candidateScore end
     end
-    return nil
+    if best then
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+        if humanoid then pcall(function() humanoid:EquipTool(best) end) end
+    end
+    return best
 end
 
 local function tpBatHit()
@@ -5261,6 +5297,10 @@ end
 
 function startBatDesyncTp()
     if not _G.AmbitiousSafeModeTryStart() then return end
+    if bodyLockEnabled and not _tpBatBodyLockSuppressed then
+        _suppressBodyLock()
+        _tpBatBodyLockSuppressed = true
+    end
     if not unwalkEnabled then
         startUnwalk()
         unwalkEnabled = true
@@ -5277,6 +5317,10 @@ function stopBatDesyncTp()
         unwalkEnabled = false
         _tpBatUnwalkForced = false
         if setUnwalkVisual then setUnwalkVisual(false) end
+    end
+    if _tpBatBodyLockSuppressed then
+        _tpBatBodyLockSuppressed = false
+        _unsuppressBodyLock(true)
     end
 end
 
@@ -5416,9 +5460,18 @@ function startBatCounter()
             task.spawn(function()
                 local ok, err = xpcall(function()
                     task.wait(0.15)
-                    local bat = findBatForCounter()
-                    if bat then swingBatForCounter(bat, character) end
-                    task.wait(0.3)
+                    if not batCounterEnabled or LP.Character ~= character or not character.Parent then return end
+                    local currentHumanoid = character:FindFirstChildOfClass("Humanoid")
+                    if not currentHumanoid then return end
+                    local currentState = currentHumanoid:GetState()
+                    local stillRagdolled = currentState == Enum.HumanoidStateType.Physics
+                        or currentState == Enum.HumanoidStateType.Ragdoll
+                        or currentState == Enum.HumanoidStateType.FallingDown
+                    if stillRagdolled then
+                        local bat = findBatForCounter()
+                        if bat then swingBatForCounter(bat, character) end
+                        task.wait(0.3)
+                    end
                 end, function(e) return tostring(e) end)
                 batCounterDebounce = false
                 pcall(_unsuppressBodyLock, true)
@@ -6005,6 +6058,28 @@ SKY_PRESETS = {
 
 local function _vC3(t) return Color3.fromRGB(t[1], t[2], t[3]) end
 
+local _shoxOriginalLighting = nil
+local function _shoxCaptureLighting()
+    if _shoxOriginalLighting then return end
+    local ok, snapshot = pcall(function()
+        return {
+            ClockTime = Lighting.ClockTime, Brightness = Lighting.Brightness,
+            OutdoorAmbient = Lighting.OutdoorAmbient, Ambient = Lighting.Ambient,
+            FogStart = Lighting.FogStart, FogEnd = Lighting.FogEnd, FogColor = Lighting.FogColor,
+            ColorShift_Top = Lighting.ColorShift_Top, ColorShift_Bottom = Lighting.ColorShift_Bottom,
+            GlobalShadows = Lighting.GlobalShadows,
+        }
+    end)
+    if ok then _shoxOriginalLighting = snapshot end
+end
+
+local function _shoxRestoreLighting()
+    if not _shoxOriginalLighting then return end
+    for property, value in pairs(_shoxOriginalLighting) do
+        pcall(function() Lighting[property] = value end)
+    end
+end
+
 function _v4mpClearSky()
     for _, child in ipairs(Lighting:GetChildren()) do
         if child:GetAttribute("_AdaptDuelsSky") then
@@ -6022,15 +6097,11 @@ function _v4mpClearSky()
 end
 
 function applyCustomSky(mode)
+    _shoxCaptureLighting()
     _v4mpClearSky()
     local preset = SKY_PRESETS[mode]
     if not preset or preset.kind == "off" then
-        Lighting.ClockTime = 14
-        Lighting.Brightness = 2
-        Lighting.OutdoorAmbient = Color3.fromRGB(127,127,127)
-        Lighting.Ambient = Color3.fromRGB(127,127,127)
-        Lighting.FogEnd = 100000
-        Lighting.GlobalShadows = true
+        _shoxRestoreLighting()
         skyTheme = "Off"
         return
     end
@@ -6263,9 +6334,11 @@ function setupMovementAndIndicators(char)
                     lastMoveDir = md
                     dir = md
                 elseif lastMoveDir.Magnitude > 0 then
+                    local anyKey = false
                     for key in pairs(MOVE_KEYS) do
-                        if UIS:IsKeyDown(key) then dir = lastMoveDir; break end
+                        if UIS:IsKeyDown(key) then dir = lastMoveDir; anyKey = true; break end
                     end
+                    if not anyKey then lastMoveDir = _V3zero end
                 end
                 _applyVelocitySpeed(dir, spd, hrp)
             end
@@ -6790,14 +6863,34 @@ local function ShoxHubToJSON(value, seen)
     return result
 end
 
+local _saveSettingsPending = false
+local _saveSettingsPendingJSON = nil
+local _saveSettingsLast = 0
 function saveAllSettings()
     if _isResetting then return true end
     local config = buildConfigTable()
+    config.themeColor = normalizeShoxTheme(currentColorTheme)
     local encodeOk, json = pcall(function() return HS:JSONEncode(ShoxHubToJSON(config)) end)
     if not encodeOk or type(json) ~= "string" then return false end
     if json == _lastSavedJSON then return true end
+    local now = os.clock()
+    if now - _saveSettingsLast < 0.25 then
+        _saveSettingsPending = true
+        _saveSettingsPendingJSON = json -- immutable snapshot for this save request
+        task.delay(0.3, function()
+            if not _saveSettingsPending then return end
+            _saveSettingsPending = false
+            local snapshotJson = _saveSettingsPendingJSON
+            _saveSettingsPendingJSON = nil
+            if _isResetting or type(snapshotJson) ~= "string" then return end
+            _saveSettingsLast = os.clock()
+            local okWrite = pcall(function() writefile(CONFIG_FILE, snapshotJson) end)
+            if okWrite then _lastSavedJSON = snapshotJson end
+        end)
+        return true
+    end
     local success, err = pcall(function() writefile(CONFIG_FILE, json) end)
-    if success then _lastSavedJSON = json end
+    if success then _lastSavedJSON = json; _saveSettingsLast = now end
     return success
 end
 
@@ -7038,6 +7131,8 @@ end
 local contentPages = nil
 
 function forceResetUI()
+    currentColorTheme = normalizeShoxTheme(currentColorTheme)
+    selectedColor = COLOR_THEMES[currentColorTheme]
     if normalBox then normalBox.Text = tostring(NS) end
     if carryBox then carryBox.Text = tostring(CS) end
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
@@ -7123,14 +7218,9 @@ function forceResetUI()
         local label = (entry.gp and entry.gp.Name) or (entry.kb and entry.kb.Name) or "None"
         ref.btn.Text = label
     end
-    local savedTheme = data.themeColor
-    if type(savedTheme) == "string" and COLOR_THEMES[savedTheme] then
-        currentColorTheme = savedTheme
-        selectedColor = COLOR_THEMES[savedTheme]
-    else
-        currentColorTheme = currentColorTheme or "Neutral"
-        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Neutral"]
-    end
+    local savedTheme = normalizeShoxTheme(currentColorTheme)
+    currentColorTheme = savedTheme
+    selectedColor = COLOR_THEMES[savedTheme]
     updateAllUIThemeColors(selectedColor)
     backgroundIndex = 1
     if backgroundImage then
@@ -7218,6 +7308,9 @@ end
 
 function resetToFactoryDefaults()
     _isResetting = true
+    -- Cancel any deferred pre-reset snapshot so it cannot overwrite factory defaults.
+    _saveSettingsPending = false
+    _saveSettingsPendingJSON = nil
     local ok, err = pcall(function()
         stopAllBackgroundTasks()
         stopAutoSteal()
@@ -7274,7 +7367,8 @@ function resetToFactoryDefaults()
         autoRightEnabled = false
         unwalkEnabled = false
         antiLagEnabled = false
-        uiLocked = true
+        uiLocked = false
+        mobileButtonsLocked = false
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
@@ -7635,7 +7729,7 @@ function buildGui()
     gui = Instance.new("ScreenGui")
     gui.Name = "FictionHub"
     gui.ResetOnSpawn = false
-    gui.DisplayOrder = 1000000
+    gui.DisplayOrder = 2000000
     gui.IgnoreGuiInset = true
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
     local guiOk = pcall(function() gui.Parent = game:GetService("CoreGui") end)
@@ -8143,11 +8237,10 @@ function buildGui()
         clk.AutoButtonColor = false
         clk.ZIndex = 10
         clk.MouseButton1Click:Connect(function()
+            if editModeEnabled and not uiLocked then return end
             on = not on
             sv(on)
-            if not (editModeEnabled and not uiLocked) then
-                pcall(cb, on)
-            end
+            pcall(cb, on)
         end)
         return sv
     end
@@ -8594,8 +8687,14 @@ function buildGui()
     bodyLockSetVisual = mkToggle(combatPage, "Body Lock", function(on)
         bodyLockEnabled = on
         if on then
-            if _blSuppressCount == 0 then startBodyLock() end
+            if _blSuppressCount == 0 then
+                startBodyLock()
+            else
+                -- A suppression owner (e.g. TP Bat) must restore the newly enabled lock.
+                _blWasEnabled = true
+            end
         else
+            _blWasEnabled = false
             stopBodyLock()
         end
     end)
@@ -9463,7 +9562,8 @@ function buildGui()
     pbFrame.BackgroundColor3 = Color3.fromRGB(10,10,10)
     pbFrame.BackgroundTransparency = 0
     pbFrame.BorderSizePixel = 0
-    pbFrame.Active = false
+    pbFrame.Active = true
+    pbFrame.Selectable = false
     pbFrame.ClipsDescendants = true
     pbFrame.Visible = CONFIG.AUTO_STEAL_ENABLED
     pbFrame.ZIndex = 10
@@ -9589,7 +9689,7 @@ function createMobilePanel()
     panel.Name = "FictionHubMobilePanel"
     panel.ResetOnSpawn = false
     panel.IgnoreGuiInset = true
-    panel.DisplayOrder = 1000001
+    panel.DisplayOrder = 2000001
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
@@ -9608,9 +9708,9 @@ function createMobilePanel()
     container.AnchorPoint = Vector2.new(1, 0)
     local mpp = savedMobilePanelPos
     if type(mpp) == "table" then
-        container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -12, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
+        container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -8, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
     else
-        container.Position = UDim2.new(1, -12, 0, 110)
+        container.Position = UDim2.new(1, -8, 0, 110)
     end
     container.BackgroundTransparency = 1
     container.BorderSizePixel = 0
@@ -9870,7 +9970,7 @@ function createMobilePanel()
     -- Preserve the restored/saved position; only use the default if no position exists.
     container.AnchorPoint = Vector2.new(1, 0)
     if not savedMobilePanelPos then
-        container.Position = UDim2.new(1, -12, 0, 110)
+        container.Position = UDim2.new(1, -8, 0, 110)
     end
     container.Visible = true
     panel.Enabled = true
@@ -9922,7 +10022,7 @@ function createTpBatFloatingButton()
     panel.Name = "TpBatButton"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 1000002
+    panel.DisplayOrder = 2000002
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -10023,7 +10123,7 @@ function createBatV2FloatingButton()
     panel.Name = "BatV2Button"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 1000003
+    panel.DisplayOrder = 2000003
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -10123,7 +10223,7 @@ function createInstaResetFloatingButton()
     panel.Name = "InstaResetButton"
     panel.ResetOnSpawn = false
     panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 1000004
+    panel.DisplayOrder = 2000004
     pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
     local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
     if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
@@ -10283,10 +10383,10 @@ local function hasAnimalEquipped(player)
     for _, child in ipairs(player.Character:GetChildren()) do
         if child:IsA("Tool") then
             local n = child.Name:lower()
-            if child:FindFirstChild("Handle")
-                or n:find("animal", 1, true)
+            if n:find("animal", 1, true)
                 or n:find("pet", 1, true)
-                or n:find("bunny", 1, true) then
+                or n:find("bunny", 1, true)
+                or n:find("brainrot", 1, true) then
                 return true
             end
         end
@@ -10321,7 +10421,10 @@ end
 local function getBatV2Counter()
     local char = LP.Character
     if not char then return nil end
-    for _, child in ipairs(char:GetChildren()) do
+    local charChildren = {}
+    local okCharacterChildren = pcall(function() charChildren = char:GetChildren() end)
+    if not okCharacterChildren then return nil end
+    for _, child in ipairs(charChildren) do
         if child:IsA("Tool") then
             local name = child.Name:lower()
             if name:find("bat") or name:find("slap") or name:find("sword") or name:find("knife") then
@@ -10331,7 +10434,10 @@ local function getBatV2Counter()
     end
     local bp = LP:FindFirstChild("Backpack")
     if bp then
-        for _, child in ipairs(bp:GetChildren()) do
+        local backpackChildren = {}
+        local okBackpack = pcall(function() backpackChildren = bp:GetChildren() end)
+        if not okBackpack then return nil end
+        for _, child in ipairs(backpackChildren) do
             if child:IsA("Tool") then
                 local name = child.Name:lower()
                 if name:find("bat") or name:find("slap") or name:find("sword") or name:find("knife") then
@@ -10343,10 +10449,12 @@ local function getBatV2Counter()
         end
     end
     if bp then
-        for _, child in ipairs(bp:GetChildren()) do
-            if child:IsA("Tool") then
-                if pcall(function() child.Parent = char end) then
-                    return child
+        local okFallback, fallbackChildren = pcall(function() return bp:GetChildren() end)
+        if okFallback then
+            for _, child in ipairs(fallbackChildren) do
+                if child:IsA("Tool") then
+                    local moved = pcall(function() child.Parent = char end)
+                    if moved then return child end
                 end
             end
         end
@@ -10404,6 +10512,8 @@ local function executeBatCounterV2()
         if not attChar then return end
         local attRoot = attChar:FindFirstChild("HumanoidRootPart")
         if not attRoot then return end
+        local initialDistance = (hrp.Position - attRoot.Position).Magnitude
+        if initialDistance > (BAT_V2_BODY_LOCK_RANGE or 60) then return end
         if not hasAnimalEquipped(attacker) then
             batCounterV2Debounce = false
             return
@@ -10755,8 +10865,8 @@ RunService.Heartbeat:Connect(function()
     local ShoxHubCharacter = LP.Character
     local ShoxHubRoot = ShoxHubCharacter and ShoxHubCharacter:FindFirstChild("HumanoidRootPart")
     local ShoxHubHumanoid = ShoxHubCharacter and ShoxHubCharacter:FindFirstChildOfClass("Humanoid")
-    if ShoxHubRoot and ShoxHubHumanoid and ShoxHubHumanoid.FloorMaterial == Enum.Material.Air and ShoxHubRoot.Position.Y >= ShoxHubAutoTPDownHeight and tick() - ShoxHubAutoTPLastAt >= 0.35 then
-        ShoxHubAutoTPLastAt = tick()
+    if ShoxHubRoot and ShoxHubHumanoid and ShoxHubHumanoid.FloorMaterial == Enum.Material.Air and ShoxHubRoot.Position.Y >= ShoxHubAutoTPDownHeight and os.clock() - ShoxHubAutoTPLastAt >= 0.35 then
+        ShoxHubAutoTPLastAt = os.clock()
         doTpDown()
     end
 end)
@@ -10766,7 +10876,7 @@ local function ShoxHubIsCarrying()
     if not ShoxHubCharacter then return false end
     for _, ShoxHubChild in ipairs(ShoxHubCharacter:GetChildren()) do
         local ShoxHubName = ShoxHubChild.Name:lower()
-        if ShoxHubName:find("brain", 1, true) or ShoxHubName:find("animal", 1, true) or ShoxHubName:find("carry", 1, true) or ShoxHubName:find("steal", 1, true) then return true end
+        if ShoxHubName:find("brainrot", 1, true) or ShoxHubName:find("animal", 1, true) or ShoxHubName:find("carry", 1, true) or ShoxHubName:find("steal", 1, true) then return true end
     end
     if LP:GetAttribute("Stealing") == true then return true end
     return false
@@ -10780,11 +10890,14 @@ RunService.Heartbeat:Connect(function()
     end
     ShoxHubE01StartedAt = ShoxHubE01StartedAt or tick()
     local ShoxHubProgress = math.clamp((tick() - ShoxHubE01StartedAt) / 2.6, 0, 1)
+    if ShoxHubE01Gui and not ShoxHubE01Gui.Parent then ShoxHubE01Gui = nil end
     if not ShoxHubE01Gui then
         ShoxHubE01Gui = Instance.new("ScreenGui")
         ShoxHubE01Gui.Name = "ShoxHubE01Warning"
         ShoxHubE01Gui.ResetOnSpawn = false
         ShoxHubE01Gui.IgnoreGuiInset = true
+        ShoxHubE01Gui.DisplayOrder = 1000006
+        ShoxHubE01Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         ShoxHubE01Gui.Parent = LP:WaitForChild("PlayerGui")
         local ShoxHubBar = Instance.new("Frame", ShoxHubE01Gui)
         ShoxHubBar.Name = "Bar"
@@ -11242,10 +11355,7 @@ LP.CharacterAdded:Connect(function(char)
         task.wait(0.05)
     end
 
-    _hookedVelParts = {}
-    -- Do not install the velocity metatable hook on respawn either.
-    _setupVelChecked(char)
-
+    -- Velocity metatable hooks were intentionally removed; no respawn hook setup is needed.
     setupMovementAndIndicators(char)
 
     if antiRagdollMode == "v1" then AntiRagdollV1.start()
