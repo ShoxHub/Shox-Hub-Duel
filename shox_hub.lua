@@ -799,7 +799,7 @@ function CarrySystem:toggleSoftSteal() self:setSoftStealEnabled(not self.softSte
 function CarrySystem:isRunning() return self._heartbeatConn ~= nil end
 function CarrySystem:getCurrentSpeed() return self:getActiveSpeed() end
 
--- ShoxHub V28 safe stability audit; monochrome palette. Legacy theme names remain loadable,
+-- ShoxHub V29 safe stability audit; monochrome palette. Legacy theme names remain loadable,
 -- but every saved theme resolves to the requested black/white appearance.
 local MONO = Color3.fromRGB(245, 245, 245)
 local COLOR_THEMES = {
@@ -885,9 +885,6 @@ function updateAllUIThemeColors(color)
         end
     end
     if gui then searchAndUpdateText(gui) end
-    if tpBatFloatingButton then
-        paintFloatingBtn(tpBatFloatingButton:FindFirstChild("Frame"), batDesyncTpEnabled)
-    end
     if batV2FloatingButton then
         paintFloatingBtn(batV2FloatingButton:FindFirstChild("Frame"), autoBatV2Enabled)
     end
@@ -1388,7 +1385,6 @@ _blRestoreTimer = nil
 savedProgressBarPos = nil
 savedButtonPositions = {}
 savedMobilePanelPos = nil
-tpBatFloatingPos = nil
 batV2FloatingPos = nil
 instaResetFloatingPos = nil
 instaResetFloatingButton = nil
@@ -2896,7 +2892,6 @@ _prevAutoRotate = nil
 tpBatConn = nil
 tpBatPrevAutoRotate = nil
 TP_BAT_SWING_CD = 0.08
-tpBatFloatingButton = nil
 batV2FloatingButton = nil
 
 enemySpeedConn = nil
@@ -4319,14 +4314,26 @@ function startAutoLeft()
     _suppressBodyLock()
     if alConn then alConn:Disconnect() end
     alPhase = 1
+    local startedAt = os.clock()
+    local routeLength = (AP.L1 - (LP.Character and LP.Character:GetPivot().Position or AP.L1)).Magnitude + (AP.L2 - AP.L1).Magnitude
+    local routeTimeout = math.clamp(routeLength / math.max(math.abs(tonumber(NS) or 0), 1) * 3 + 8, 12, 180)
     alConn = RunService.Heartbeat:Connect(function(dt)
         if not autoLeftEnabled then return end
+        if os.clock() - startedAt > routeTimeout then
+            autoLeftEnabled = false
+            stopAutoLeft()
+            return
+        end
         local char = LP.Character
-        if not char then return end
+        if not char or not char.Parent then
+            autoLeftEnabled = false
+            stopAutoLeft()
+            return
+        end
         local root = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not root or not hum then return end
-        local spd = NS
+        local spd = math.max(0, tonumber(NS) or 0)
         if alPhase == 1 then
             local tgt = _V3new(AP.L1.X, root.Position.Y, AP.L1.Z)
             if (tgt - root.Position).Magnitude < 1 then
@@ -4405,14 +4412,26 @@ function startAutoRight()
     _suppressBodyLock()
     if arConn then arConn:Disconnect() end
     arPhase = 1
+    local startedAt = os.clock()
+    local routeLength = (AP.R1 - (LP.Character and LP.Character:GetPivot().Position or AP.R1)).Magnitude + (AP.R2 - AP.R1).Magnitude
+    local routeTimeout = math.clamp(routeLength / math.max(math.abs(tonumber(NS) or 0), 1) * 3 + 8, 12, 180)
     arConn = RunService.Heartbeat:Connect(function(dt)
         if not autoRightEnabled then return end
+        if os.clock() - startedAt > routeTimeout then
+            autoRightEnabled = false
+            stopAutoRight()
+            return
+        end
         local char = LP.Character
-        if not char then return end
+        if not char or not char.Parent then
+            autoRightEnabled = false
+            stopAutoRight()
+            return
+        end
         local root = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
         if not root or not hum then return end
-        local spd = NS
+        local spd = math.max(0, tonumber(NS) or 0)
         if arPhase == 1 then
             local tgt = _V3new(AP.R1.X, root.Position.Y, AP.R1.Z)
             if (tgt - root.Position).Magnitude < 1 then
@@ -4458,26 +4477,29 @@ end
 
 function getClosestTarget()
     local char = LP.Character
-    if not char then return nil end
+    if not char or not char.Parent then return nil end
     local root = char:FindFirstChild("HumanoidRootPart")
-    if not root then return nil end
+    local ownHumanoid = char:FindFirstChildOfClass("Humanoid")
+    if not root or not ownHumanoid or ownHumanoid.Health <= 0 then return nil end
+
     local rpos = root.Position
-    local closest, minDist = nil, _huge
+    local closest, minDistSq = nil, _huge
     local plist = _GetPlayersCached()
     for i = 1, #plist do
         local plr = plist[i]
-        if plr ~= LP then
-            local c = plr.Character
-            if c then
-                local tRoot = c:FindFirstChild("HumanoidRootPart")
-                if tRoot then
-                    local hum = c:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.Health > 0 then
-                        local dx = tRoot.Position.X - rpos.X
-                        local dy = tRoot.Position.Y - rpos.Y
-                        local dz = tRoot.Position.Z - rpos.Z
-                        local d = dx*dx + dy*dy + dz*dz
-                        if d < minDist then minDist = d; closest = tRoot end
+        -- This is intentionally player-vs-player target selection: every other
+        -- living player is eligible, regardless of the game's Remote/object names.
+        if plr ~= LP and plr.Parent == Players then
+            local targetCharacter = plr.Character
+            if targetCharacter and targetCharacter.Parent then
+                local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+                local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+                if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
+                    local offset = targetRoot.Position - rpos
+                    local distanceSq = offset:Dot(offset)
+                    if distanceSq < minDistSq then
+                        minDistSq = distanceSq
+                        closest = targetRoot
                     end
                 end
             end
@@ -4486,19 +4508,24 @@ function getClosestTarget()
     return closest
 end
 
+local _nextBatSwingAt = 0
 function trySwing()
-    pcall(function()
+    local now = _tick()
+    if now < _nextBatSwingAt then return end
+    local ok = pcall(function()
         local char = LP.Character
-        if not char then return end
+        if not char or not char.Parent then return end
         local bat = findBat()
-        if bat then
-            if bat.Parent ~= char then
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum then pcall(function() hum:EquipTool(bat) end) end
-            end
-            pcall(function() bat:Activate() end)
+        if not bat or not bat:IsA("Tool") then return end
+        if bat.Parent ~= char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then pcall(function() hum:EquipTool(bat) end) end
+            return
         end
+        bat:Activate()
+        _nextBatSwingAt = now + 0.14
     end)
+    if not ok then _nextBatSwingAt = now + 0.2 end
 end
 
 function stopAimbotAdapt()
@@ -5109,11 +5136,12 @@ end
 
 -- ═══════════════════════════════════════════════════════════════
 -- TP BAT — Network Owner Teleport + Anti-Die + Lagger
--- Keybind: KB.TPBat (default X)  |  Botón: createTpBatFloatingButton
+-- TP Bat is available from the main combat toggle, keybind, and mobile quick-access button.
 -- ═══════════════════════════════════════════════════════════════
 batDesyncTpEnabled = false
 batDesyncTpConn    = nil
 batDesyncTpSetVisual = nil
+mobSetTpBat = nil
 local _tpBatUnwalkForced = false
 local _tpBatBodyLockSuppressed = false
 
@@ -5462,6 +5490,7 @@ function setTPBatVersion(_) end
 
 function updateTpBatButtonVisual(state)
     if batDesyncTpSetVisual then batDesyncTpSetVisual(state) end
+    if mobSetTpBat then mobSetTpBat(state) end
 end
 
 _G.AlvaroTPBat = {
@@ -6502,7 +6531,6 @@ function disableAllAimbots()
     end
 end
 
-local stopBatCounterV2
 
 function stopAllBackgroundTasks()
     if movementLoop then movementLoop:Disconnect(); movementLoop = nil end
@@ -6516,7 +6544,6 @@ function stopAllBackgroundTasks()
     if antiDieEnabled then AntiDieModule.stop() end
     if antiFlingEnabled then AntiFlingShieldModule.stop() end
     stopBatCounter()
-    stopBatCounterV2()
     stopMedusaCounter()
     stopAutoSteal()
     disableAutoBat()
@@ -6862,7 +6889,6 @@ function buildConfigTable()
         autoSteal = CONFIG.AUTO_STEAL_ENABLED,
         medusaCounter = medusaCounterEnabled,
         batCounter = batCounterEnabled,
-        batCounterV2 = batCounterV2Enabled,
         laggerToggled = laggerToggled,
         laggerCarryToggled = laggerCarryToggled,
         carryMode = speedMode,
@@ -6911,7 +6937,6 @@ function buildConfigTable()
         tpBatKey = {kb = KB.TPBat.kb and KB.TPBat.kb.Name, gp = KB.TPBat.gp and KB.TPBat.gp.Name},
         batV2Key = {kb = KB.BatV2.kb and KB.BatV2.kb.Name, gp = KB.BatV2.gp and KB.BatV2.gp.Name},
         instaResetKey = {kb = KB.InstaReset.kb and KB.InstaReset.kb.Name, gp = KB.InstaReset.gp and KB.InstaReset.gp.Name},
-        tpBatFloatingPos = tpBatFloatingPos,
         batV2FloatingPos = batV2FloatingPos,
         instaResetFloatingPos = instaResetFloatingPos,
         bodyLockEnabled = bodyLockEnabled,
@@ -7088,7 +7113,6 @@ function loadAllSettings()
     CONFIG.AUTO_STEAL_ENABLED = data.autoSteal or false
     medusaCounterEnabled = data.medusaCounter or false
     batCounterEnabled = data.batCounter or false
-    batCounterV2Enabled = data.batCounterV2 or false
     unwalkEnabled = data.unwalk or false
     antiLagEnabled = data.antiLag or false
     laggerToggled = data.laggerToggled or false
@@ -7215,8 +7239,20 @@ function loadAllSettings()
     lk(KB.BatV2, data.batV2Key)
     lk(KB.InstaReset, data.instaResetKey)
     if data.mobileButtonPositions then savedButtonPositions = data.mobileButtonPositions end
+    do
+        local oldDefaults = {
+            AutoLeft = {68, 0}, AutoBat = {0, 78}, AutoRight = {68, 78},
+            TpDown = {0, 156}, Carry = {68, 156}, Lagger1 = {0, 234}, Lagger2 = {68, 234},
+        }
+        for buttonName, oldPos in pairs(oldDefaults) do
+            local saved = savedButtonPositions and savedButtonPositions[buttonName]
+            if type(saved) == "table" and saved.X == oldPos[1] and saved.Y == oldPos[2] then
+                local newX, newY = getDefaultButtonPosition(buttonName)
+                savedButtonPositions[buttonName] = {X = newX, Y = newY}
+            end
+        end
+    end
     if data.mobilePanelPos then savedMobilePanelPos = data.mobilePanelPos end
-    if data.tpBatFloatingPos then tpBatFloatingPos = data.tpBatFloatingPos end
     if data.batV2FloatingPos then batV2FloatingPos = data.batV2FloatingPos end
     if data.instaResetFloatingPos then instaResetFloatingPos = data.instaResetFloatingPos end
     if data.progressBarPos then savedProgressBarPos = data.progressBarPos end
@@ -7345,7 +7381,6 @@ function forceResetUI()
     safeSet(autoLeftSetVisual, false)
     safeSet(autoRightSetVisual, false)
     safeSet(setBatCounterVisual, false)
-    safeSet(setBatCounterV2Visual, false)
     safeSet(setMedusaVisual, false)
     safeSet(setUnwalkVisual, false)
     safeSet(setAntiLagVisual, false)
@@ -7474,11 +7509,6 @@ function resetFloatingPositions()
             end
         end
     end
-    if tpBatFloatingButton and tpBatFloatingButton:FindFirstChild("Frame") then
-        local btnFrame = tpBatFloatingButton:FindFirstChild("Frame")
-        btnFrame.Position = UDim2.new(0.5, 20, 0, 10)
-        tpBatFloatingPos = nil
-    end
     if batV2FloatingButton and batV2FloatingButton:FindFirstChild("Frame") then
         local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
         btnFrame.Position = UDim2.new(0.5, -50, 0, 10)
@@ -7493,8 +7523,7 @@ function resetFloatingPositions()
         savedProgressBarPos = nil
     end
     savedMobilePanelPos = nil
-    tpBatFloatingPos = nil
-    batV2FloatingPos = nil
+        batV2FloatingPos = nil
 end
 
 function resetToFactoryDefaults()
@@ -7505,8 +7534,7 @@ function resetToFactoryDefaults()
         stopAllBackgroundTasks()
         stopAutoSteal()
         stopBatCounter()
-        stopBatCounterV2()
-        stopMedusaCounter()
+            stopMedusaCounter()
         if AntiRagdollV1.isRunning() then AntiRagdollV1.stop() end
         if AntiRagdollV2.Enabled then stopAntiRagdollV2() end
         if antiDieEnabled then AntiDieModule.stop() end
@@ -7551,7 +7579,6 @@ function resetToFactoryDefaults()
         antiFlingEnabled = false
         medusaCounterEnabled = false
         batCounterEnabled = false
-        batCounterV2Enabled = false
         autoBatEnabled = false
         autoLeftEnabled = false
         autoRightEnabled = false
@@ -7668,8 +7695,8 @@ function getDefaultButtonPosition(btnName)
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
     local orderMap = {
-        DropBR = 0, AutoLeft = 1, AutoBat = 2, AutoRight = 3,
-        TpDown = 4, Carry = 5, Lagger1 = 6, Lagger2 = 7
+        DropBR = 0, TPBat = 1, AutoLeft = 2, AutoBat = 3, AutoRight = 4,
+        TpDown = 5, Carry = 6, Lagger1 = 7, Lagger2 = 8
     }
     local order = orderMap[btnName] or 0
     local row = _floor(order / 2)
@@ -7715,6 +7742,7 @@ function _G.AmbitiousApplyMobileButtonsHidden()
                 if btnCont then
                     local btnToKey = {
                         TpDown    = "tp",
+                        TPBat     = "tpBat",
                         AutoBat   = "aimbot",
                         AutoLeft  = "autoLeft",
                         AutoRight = "autoRight",
@@ -8904,11 +8932,6 @@ function buildGui()
         if on then startBatCounter() else stopBatCounter() end
     end)
 
-    setBatCounterV2Visual = mkToggle(combatPage, "Bat Counter V2", function(on)
-        batCounterV2Enabled = on
-        if on then startBatCounterV2() else stopBatCounterV2() end
-    end)
-
     setMedusaVisual = mkToggle(combatPage, "Medusa Counter", function(on)
         medusaCounterEnabled = on
         if on then
@@ -9859,26 +9882,27 @@ function buildGui()
         local lastFrame = _tick()
         local fpsSamples = {}
         local fpsAvg = 60
-        RunService.RenderStepped:Connect(function()
+        local fpsConnection = RunService.RenderStepped:Connect(function()
             local now = _tick()
             local dt = now - lastFrame
             lastFrame = now
             if dt > 0 then
-                table.insert(fpsSamples, 1 / dt)
+                table.insert(fpsSamples, math.clamp(1 / dt, 1, 240))
                 if #fpsSamples > 30 then table.remove(fpsSamples, 1) end
                 local sum = 0
                 for _, v in ipairs(fpsSamples) do sum = sum + v end
                 fpsAvg = sum / #fpsSamples
             end
         end)
-        while true do
+        while fpsNeon and fpsNeon.Parent and pbFrame and pbFrame.Parent do
             local ping = 0
             pcall(function() ping = LP:GetNetworkPing() * 1000 end)
-            if fpsNeon then
+            if fpsNeon and fpsNeon.Parent then
                 fpsNeon.Text = string.format("%dFPS · %dms", _floor(fpsAvg + 0.5), _floor(ping + 0.5))
             end
             task.wait(0.75)
         end
+        if fpsConnection then fpsConnection:Disconnect() end
     end)
 
     drag(main)
@@ -9901,7 +9925,7 @@ function createMobilePanel()
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
     local COLUMNS = 2
-    local ROWS = 4
+    local ROWS = 5
     local PANEL_W = BTN_W * COLUMNS + GAP * (COLUMNS - 1)
     local PANEL_H = BTN_H * ROWS + (GAP + 10) * (ROWS - 1)
 
@@ -9938,8 +9962,8 @@ function createMobilePanel()
     local INACTIVE_BG = Color3.fromRGB(8,8,10)
 
     local buttons = {}
-    local buttonNames = {"DropBR", "AutoLeft", "AutoBat", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
-    local buttonTexts = {"DROP\nBR", "AUTO\nLEFT", "BAT\nAIMBOT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
+    local buttonNames = {"DropBR", "TPBat", "AutoLeft", "AutoBat", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
+    local buttonTexts = {"DROP\nBR", "TP\nBAT", "AUTO\nLEFT", "BAT\nAIMBOT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
 
     local function createButton(name, text, order, isToggle, callback)
         local btn = Instance.new("TextButton", btnContainer)
@@ -10087,6 +10111,11 @@ function createMobilePanel()
                 end)
                 task.delay(0.3, function() setActive(false) end)
             end
+        elseif name == "TPBat" then
+            callback = function(setActive)
+                toggleBatDesyncTp()
+                setActive(batDesyncTpEnabled)
+            end
         elseif name == "AutoLeft" then
             callback = function(setActive)
                 autoLeftEnabled = not autoLeftEnabled
@@ -10156,6 +10185,7 @@ function createMobilePanel()
         mobSetLagger2 = buttons.Lagger2 and buttons.Lagger2.setActive
 
         local setActive = createButton(name, text, i-1, true, callback)
+        if name == "TPBat" then mobSetTpBat = setActive end
         if name == "AutoBat" then mobSetAutoBat = setActive end
         if name == "AutoLeft" then mobSetAutoLeft = setActive end
         if name == "AutoRight" then mobSetAutoRight = setActive end
@@ -10166,6 +10196,7 @@ function createMobilePanel()
         if name == "Lagger2" then mobSetLagger2 = setActive end
     end
 
+    if buttons.TPBat and buttons.TPBat.setActive then buttons.TPBat.setActive(batDesyncTpEnabled) end
     if buttons.AutoBat and buttons.AutoBat.setActive then buttons.AutoBat.setActive(autoBatEnabled) end
     if buttons.AutoLeft and buttons.AutoLeft.setActive then buttons.AutoLeft.setActive(autoLeftEnabled) end
     if buttons.AutoRight and buttons.AutoRight.setActive then buttons.AutoRight.setActive(autoRightEnabled) end
@@ -10220,107 +10251,6 @@ function createMobilePanel()
     -- The panel itself stays anchored; individual buttons are movable when Lock Buttons is off.
 
     _G.AmbitiousApplyMobileButtonsHidden()
-    return panel
-end
-
-function createTpBatFloatingButton()
-    local panel = Instance.new("ScreenGui")
-    panel.Name = "TpBatButton"
-    panel.ResetOnSpawn = false
-    panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 2000002
-    pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
-    local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
-    if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
-
-    local btnFrame = Instance.new("Frame", panel)
-    btnFrame.Size = UDim2.new(0, 60, 0, 60)
-    btnFrame.Name = "Frame"
-    if tpBatFloatingPos then
-        btnFrame.Position = UDim2.new(tpBatFloatingPos.XScale or 0.5,
-                                      tpBatFloatingPos.XOffset or 20,
-                                      tpBatFloatingPos.YScale or 0,
-                                      tpBatFloatingPos.YOffset or 10)
-    else
-        btnFrame.Position = UDim2.new(0.5, 20, 0, 10)
-    end
-    btnFrame.BackgroundColor3 = Color3.fromRGB(8,8,10)
-    btnFrame.BackgroundTransparency = 0
-    btnFrame.BorderSizePixel = 0
-    btnFrame.ZIndex = 20
-    Instance.new("UICorner", btnFrame).CornerRadius = UDim.new(0, 10)
-    local bgGrad = Instance.new("UIGradient", btnFrame)
-    bgGrad.Name = "BtnGrad"
-    bgGrad.Rotation = 90
-    bgGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(70, 70, 78)),
-        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(28, 28, 34)),
-        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 14)),
-        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
-    })
-    local stroke = Instance.new("UIStroke", btnFrame)
-    stroke.Color = Color3.fromRGB(70,70,78)
-    stroke.Thickness = 1
-    stroke.Transparency = 0.45
-    stroke.Name = "TpBatStroke"
-    local label = Instance.new("TextLabel", btnFrame)
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = "TP\nBAT"
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = SHOX_UI_FONT
-    label.TextSize = 11
-    label.TextWrapped = true
-    label.ZIndex = 21
-
-    local uiScale = Instance.new("UIScale", btnFrame)
-    uiScale.Scale = floatingButtonScale
-    table.insert(_floatingUIScales, uiScale)
-
-    local function setActive(state)
-        label.Text = "TP\nBAT"
-        paintFloatingBtn(btnFrame, state)
-    end
-    batDesyncTpSetVisual = setActive
-
-    local dragging = false; local hasMoved = false; local dragStart, startPos
-    btnFrame.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; hasMoved = false; dragStart = inp.Position; startPos = btnFrame.Position
-        end
-    end)
-    btnFrame.InputChanged:Connect(function(inp)
-        if not dragging then return end
-        if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then
-            local delta = inp.Position - dragStart
-            if delta.Magnitude > 5 then hasMoved = true end
-            if hasMoved and not uiLocked then
-                btnFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
-                                              startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-            end
-        end
-    end)
-    btnFrame.InputEnded:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            if dragging then
-                if not hasMoved then
-                    toggleBatDesyncTp()
-                    setActive(batDesyncTpEnabled)
-                elseif not uiLocked and hasMoved then
-                    tpBatFloatingPos = {
-                        XScale = btnFrame.Position.X.Scale,
-                        XOffset = btnFrame.Position.X.Offset,
-                        YScale = btnFrame.Position.Y.Scale,
-                        YOffset = btnFrame.Position.Y.Offset
-                    }
-                    pcall(saveAllSettings)
-                end
-                dragging = false; hasMoved = false
-            end
-        end
-    end)
-
-    tpBatFloatingButton = panel
     return panel
 end
 
@@ -10561,234 +10491,6 @@ function createInstaResetFloatingButton()
     return panel
 end
 
-batCounterV2Enabled = false
-batCounterV2Debounce = false
-batCounterV2Conn = nil
-batCounterV2HitCooldown = false
-BAT_COUNTER_V2_SWING_CD = 0.08
-setBatCounterV2Visual = nil
-
-local _batCounterV2OriginalTpState = false
-local _batCounterV2SuppressCount = 0
-local _lastBatCounterV2Time = 0
-local _batCounterV2Cooldown = 0.01
-
-local function isPlayerRagdolled(player)
-    if not player or not player.Character then return false end
-    local character = player.Character
-    local hum = character and character:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    local state = hum:GetState()
-    return state == Enum.HumanoidStateType.Physics or
-           state == Enum.HumanoidStateType.Ragdoll or
-           state == Enum.HumanoidStateType.FallingDown
-end
-
-local function hasAnimalEquipped(player)
-    if not player or not player.Character then return false end
-    for _, child in ipairs(player.Character:GetChildren()) do
-        if child:IsA("Tool") then
-            local n = child.Name:lower()
-            if n:find("animal", 1, true)
-                or n:find("pet", 1, true)
-                or n:find("bunny", 1, true)
-                or n:find("brainrot", 1, true) then
-                return true
-            end
-        end
-    end
-    return false
-end
-
-local function getAttackingPlayerWithAnimal()
-    local myChar = LP.Character
-    if not myChar then return nil end
-    local myRoot = myChar:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-    local closest, minDist = nil, _huge
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Character then
-            if not hasAnimalEquipped(plr) then continue end
-            local targetCharacter = plr.Character
-            local tRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-            local hum = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
-            if tRoot and hum and hum.Health > 0 then
-                local dist = (tRoot.Position - myRoot.Position).Magnitude
-                if dist < 12 and dist < minDist then
-                    minDist = dist
-                    closest = plr
-                end
-            end
-        end
-    end
-    return closest
-end
-
-local function getBatV2Counter()
-    local char = LP.Character
-    if not char then return nil end
-    local charChildren = {}
-    local okCharacterChildren = pcall(function() charChildren = char:GetChildren() end)
-    if not okCharacterChildren then return nil end
-    for _, child in ipairs(charChildren) do
-        if child:IsA("Tool") then
-            local name = child.Name:lower()
-            if name:find("bat") or name:find("slap") or name:find("sword") or name:find("knife") then
-                return child
-            end
-        end
-    end
-    local bp = LP:FindFirstChild("Backpack")
-    if bp then
-        local backpackChildren = {}
-        local okBackpack = pcall(function() backpackChildren = bp:GetChildren() end)
-        if not okBackpack then return nil end
-        for _, child in ipairs(backpackChildren) do
-            if child:IsA("Tool") then
-                local name = child.Name:lower()
-                if name:find("bat") or name:find("slap") or name:find("sword") or name:find("knife") then
-                    if pcall(function() child.Parent = char end) then
-                        return child
-                    end
-                end
-            end
-        end
-    end
-    if bp then
-        local okFallback, fallbackChildren = pcall(function() return bp:GetChildren() end)
-        if okFallback then
-            for _, child in ipairs(fallbackChildren) do
-                if child:IsA("Tool") then
-                    local moved = pcall(function() child.Parent = char end)
-                    if moved then return child end
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function tryHitBatCounterV2()
-    if batCounterV2HitCooldown then return end
-    batCounterV2HitCooldown = true
-    pcall(function()
-        local bat = getBatV2Counter()
-        if bat then
-            bat:Activate()
-            local ev = bat:FindFirstChildWhichIsA("RemoteEvent")
-            if ev then ev:FireServer() end
-        end
-    end)
-    task.delay(BAT_COUNTER_V2_SWING_CD, function()
-        batCounterV2HitCooldown = false
-    end)
-end
-
-local function executeBatCounterV2()
-    local now = _tick()
-    if now - _lastBatCounterV2Time < _batCounterV2Cooldown then return end
-    if batCounterV2Debounce then return end
-    batCounterV2Debounce = true
-    _lastBatCounterV2Time = now
-    local attacker = getAttackingPlayerWithAnimal()
-    if not attacker then
-        batCounterV2Debounce = false
-        return
-    end
-    if isPlayerRagdolled(attacker) then
-        batCounterV2Debounce = false
-        return
-    end
-    if not hasAnimalEquipped(attacker) then
-        batCounterV2Debounce = false
-        return
-    end
-    _batCounterV2OriginalTpState = batDesyncTpEnabled
-    local tpWasEnabled = batDesyncTpEnabled
-    if not tpWasEnabled then
-        startBatDesyncTp()
-        if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
-    end
-    local function doCounterHit()
-        local char = LP.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        local attChar = attacker.Character
-        if not attChar then return end
-        local attRoot = attChar:FindFirstChild("HumanoidRootPart")
-        if not attRoot then return end
-        local initialDistance = (hrp.Position - attRoot.Position).Magnitude
-        if initialDistance > (BAT_V2_BODY_LOCK_RANGE or 60) then return end
-        if not hasAnimalEquipped(attacker) then
-            batCounterV2Debounce = false
-            return
-        end
-        -- Avoid the hidden PhysicsRepRootPart override; it is unsupported and detectable.
-        local targetPos = attRoot.Position + _V3new(0, 0.9, 0)
-        if (hrp.Position - targetPos).Magnitude > 8 then
-            hrp.CFrame = _CFnew(targetPos)
-        end
-        tryHitBatCounterV2()
-        task.delay(0.05, function() tryHitBatCounterV2() end)
-        task.delay(0.1, function() tryHitBatCounterV2() end)
-    end
-    doCounterHit()
-    task.delay(0.2, function()
-        if not _batCounterV2OriginalTpState and batDesyncTpEnabled then
-            stopBatDesyncTp()
-            if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
-        end
-        batCounterV2Debounce = false
-    end)
-end
-
-stopBatCounterV2 = function()
-    if batCounterV2Conn then
-        batCounterV2Conn:Disconnect()
-        batCounterV2Conn = nil
-    end
-    batCounterV2Debounce = false
-    batCounterV2HitCooldown = false
-end
-
-function startBatCounterV2()
-    if batCounterV2Conn then return end
-    batCounterV2Conn = RunService.Heartbeat:Connect(function()
-        if not batCounterV2Enabled then return end
-        if batCounterV2Debounce then return end
-        local character = LP.Character
-        if not character then return end
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if not humanoid or humanoid.Health <= 0 then return end
-        local state = humanoid:GetState()
-        local isBeingAttacked = state == Enum.HumanoidStateType.Physics or
-                               state == Enum.HumanoidStateType.Ragdoll or
-                               state == Enum.HumanoidStateType.FallingDown or
-                               state == Enum.HumanoidStateType.GettingUp or
-                               state == Enum.HumanoidStateType.Stunned
-        if isBeingAttacked then
-            local attacker = getAttackingPlayerWithAnimal()
-            if attacker then
-                if not isPlayerRagdolled(attacker) then
-                    if hasAnimalEquipped(attacker) then
-                        executeBatCounterV2()
-                    end
-                end
-            end
-        end
-    end)
-end
-
-function toggleBatCounterV2()
-    batCounterV2Enabled = not batCounterV2Enabled
-    if batCounterV2Enabled then
-        startBatCounterV2()
-    else
-        stopBatCounterV2()
-    end
-    return batCounterV2Enabled
-end
 
 function updateUIFromLoaded()
     task.wait()
@@ -10866,10 +10568,6 @@ function updateUIFromLoaded()
         setBatCounterVisual(true)
         startBatCounter()
     end
-    if batCounterV2Enabled and setBatCounterV2Visual then
-        setBatCounterV2Visual(true)
-        startBatCounterV2()
-    end
     if unwalkEnabled and setUnwalkVisual then
         setUnwalkVisual(true)
         task.spawn(function() task.wait(0.5); startUnwalk() end)
@@ -10891,10 +10589,12 @@ function updateUIFromLoaded()
 
     if batDesyncTpEnabled then
         if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
+        if mobSetTpBat then mobSetTpBat(true) end
         if not _G.AlvaroTP.on then startBatDesyncTp() end
         updateTpBatButtonVisual(true)
     else
         if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
+        if mobSetTpBat then mobSetTpBat(false) end
         updateTpBatButtonVisual(false)
     end
 
@@ -11002,7 +10702,7 @@ function updateUIFromLoaded()
             MobilePanel.Enabled = true
             local btnCont = container:FindFirstChild("ButtonsContainer")
             if btnCont then
-                local keyByButton = {TpDown="tp", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
+                local keyByButton = {TpDown="tp", TPBat="tpBat", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
                 for _, btn in ipairs(btnCont:GetChildren()) do
                     if btn:IsA("TextButton") then
                         local defX, defY = getDefaultButtonPosition(btn.Name)
@@ -11020,17 +10720,6 @@ function updateUIFromLoaded()
         end
     end
 
-    if tpBatFloatingButton and tpBatFloatingPos then
-        local bf = tpBatFloatingButton:FindFirstChild("Frame")
-        if bf then
-            bf.Position = UDim2.new(
-                tpBatFloatingPos.XScale or 0.5,
-                tpBatFloatingPos.XOffset or 20,
-                tpBatFloatingPos.YScale or 0,
-                tpBatFloatingPos.YOffset or 10
-            )
-        end
-    end
 
     if batV2FloatingButton and batV2FloatingPos then
         local bf = batV2FloatingButton:FindFirstChild("Frame")
@@ -11208,7 +10897,6 @@ for _, legacyName in ipairs({"TpBatButton", "BatV2Button", "InstaResetButton"}) 
         if oldGui then oldGui:Destroy() end
     end
 end
-tpBatFloatingButton = nil
 batV2FloatingButton = nil
 instaResetFloatingButton = nil
 
@@ -11560,8 +11248,7 @@ LP.CharacterAdded:Connect(function(char)
         stopAutoLeft()
         stopAutoRight()
         stopBatCounter()
-        stopBatCounterV2()
-        stopMedusaCounter()
+            stopMedusaCounter()
         if not _tpBatUnwalkForced then stopUnwalk() end
         stopDropBrainrot()
         if autoBatEnabled then disableAutoBat() end
@@ -11598,7 +11285,6 @@ LP.CharacterAdded:Connect(function(char)
         end
 
         if batCounterEnabled then startBatCounter() end
-        if batCounterV2Enabled then startBatCounterV2() end
         if unwalkEnabled and not _tpBatUnwalkForced then startUnwalk() end
 
         if currentAnimPack ~= "Off" then
