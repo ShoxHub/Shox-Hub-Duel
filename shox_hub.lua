@@ -404,7 +404,7 @@ CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
-BAT_AIMBOT_SPEED = 58
+BAT_AIMBOT_SPEED = 90
 BYPASS_AIMBOT_SPEED = 60
 MOBILE_PANEL_WIDTH = 128
 MOBILE_PANEL_HEIGHT = 294
@@ -866,7 +866,7 @@ function updateAllUIThemeColors(color)
     local function searchAndUpdateText(parent)
         for _, child in ipairs(parent:GetDescendants()) do
             if child:IsA("TextLabel") then
-                if child.Text:find("discord.gg") or child.Text:find("Spd:") or child.Name == "DiscordText" or
+                if child.Text:find("discord.gg", 1, true) or child.Text:find("Spd:", 1, true) or child.Name == "DiscordText" or
                    child.Name == "FictionHubSpeedIndicator" or child.Text:find("FPS") or child.Text:find("speed") then
                     child.TextColor3 = color
                 end
@@ -1200,7 +1200,7 @@ local function applyHeadlessKorblox(char)
             if w then
                 local p0, p1 = w.Part0, w.Part1
                 if (p0 and p0.Name == "Head") or (p1 and p1.Name == "Head") then
-                    v.Parent = nil
+                    v:Destroy()
                 end
             end
         end
@@ -1393,6 +1393,8 @@ neonWeatherEnabled = false
 skyTheme = "Off"
 skySelectorLabel = nil
 _originalLighting = nil
+_neonCreatedColorCorrection = nil
+_neonCreatedBloom = nil
 setNeonWeatherVisual = nil
 
 currentAnimPack = "Off"
@@ -2887,6 +2889,7 @@ setFovVisual = nil
 fovSliderSet = nil
 
 _anyKeyListening = false
+_activeKeyCapture = nil
 _aimbotConn = nil
 _prevAutoRotate = nil
 tpBatConn = nil
@@ -3009,9 +3012,24 @@ local function doTpDown()
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-        root.CFrame = _CFnew(root.Position.X, -7, root.Position.Z) * CFrame.Angles(0, select(2, root.CFrame:ToEulerAnglesYXZ()), 0)
-        root.Velocity = _V3zero
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if not root or not humanoid or humanoid.Health <= 0 then return end
+
+        -- Resolve the floor at the current X/Z instead of assuming every map
+        -- has a walkable surface at world Y = -7. Exclude our own character.
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = {char}
+        params.IgnoreWater = true
+        local hit = workspace:Raycast(root.Position + _V3new(0, 2, 0), _V3new(0, -5000, 0), params)
+        if not hit then return end
+
+        local yaw = select(2, root.CFrame:ToEulerAnglesYXZ())
+        local floorOffset = math.max(0, humanoid.HipHeight) + (root.Size.Y * 0.5) + 0.05
+        root.CFrame = _CFnew(root.Position.X, hit.Position.Y + floorOffset, root.Position.Z)
+            * CFrame.Angles(0, yaw, 0)
+        root.AssemblyLinearVelocity = _V3zero
+        root.AssemblyAngularVelocity = _V3zero
     end)
 end
 
@@ -3274,9 +3292,9 @@ local function forceExitRagdollV1()
     local hum = stateV1.cachedChar.humanoid
     local root = stateV1.cachedChar.root
     if not hum.Parent or not root.Parent then return end
-    pcall(function()
-        LP:SetAttribute("RagdollEndTime", workspace:GetServerTimeNow())
-    end)
+    -- RagdollEndTime is server-owned in the target experience. A LocalScript
+    -- cannot authoritatively update that server state, so do not write a
+    -- misleading client-only attribute here. Local recovery continues below.
     for _, descendant in ipairs(stateV1.cachedChar.character:GetDescendants()) do
         if descendant:IsA("BallSocketConstraint") or
            (descendant:IsA("Attachment") and descendant.Name:find("RagdollAttachment")) then
@@ -3560,17 +3578,11 @@ local function stabilizeRoot(root)
     if batDesyncTpEnabled then return end
     local velocity
     local ok = pcall(function() velocity = root.AssemblyLinearVelocity end)
-    if not ok or typeof(velocity) ~= "Vector3" then
-        local legacyOk
-        legacyOk, velocity = pcall(function() return root.Velocity end)
-        if not legacyOk or typeof(velocity) ~= "Vector3" then return end
-    end
+    if not ok or typeof(velocity) ~= "Vector3" then return end
     if velocity.Magnitude <= AntiFlingShieldModule.velocityThreshold then return end
     local stabilized = _V3new(0, velocity.Y, 0)
     pcall(function() root.AssemblyLinearVelocity = stabilized end)
     pcall(function() root.AssemblyAngularVelocity = _V3zero end)
-    pcall(function() root.Velocity = stabilized end)
-    pcall(function() root.RotVelocity = _V3zero end)
 end
 
 function AntiFlingShieldModule.start()
@@ -4099,6 +4111,7 @@ function _unsuppressBodyLock(delayed)
 end
 
 LP.CharacterAdded:Connect(function()
+    if stopBatCounter then pcall(stopBatCounter) end
     _blSuppressCount = 0
     _blWasEnabled = false
     if _blRestoreTimer then
@@ -4587,10 +4600,10 @@ function startAimbotAdapt()
         local desiredVel = _V3new(flatDir.X * BAT_AIMBOT_SPEED, yVel, flatDir.Z * BAT_AIMBOT_SPEED)
         local currentVelocity = root.AssemblyLinearVelocity
         local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
-        local alpha = 1 - math.exp(-safeDt * 10)
+        local alpha = 1 - math.exp(-safeDt * 22)
         local nextVelocity = currentVelocity:Lerp(desiredVel, alpha)
         local velocityDelta = nextVelocity - currentVelocity
-        local maxDelta = 180 * safeDt
+        local maxDelta = 420 * safeDt
         if velocityDelta.Magnitude > maxDelta then
             nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
         end
@@ -4961,7 +4974,8 @@ function BB.Start()
         end
         predicted += acceleration * ZCFG.ACCELERATION_PREDICTION_WEIGHT * (serverDelay * serverDelay * 0.5)
         if airborne then
-            predicted += Vector3.new(0, -0.5 * ZCFG.GRAVITY * predictionTime * predictionTime, 0)
+            local totalPredictionTime = serverDelay + predictionTime
+            predicted += Vector3.new(0, -0.5 * ZCFG.GRAVITY * totalPredictionTime * totalPredictionTime, 0)
         end
 
         local flatPrediction = Vector3.new(predictionVelocity.X, 0, predictionVelocity.Z)
@@ -5156,7 +5170,6 @@ _G.AlvaroTP = _G.AlvaroTP or {
 }
 
 local _tpBatHitCooldown = false
-local _tpBatMaxRange    = 100
 
 -- ──────────────────────────────────────────────────────────────
 -- ANTI-DIE (integrado al TP BAT); el lagger no soportado está deshabilitado.
@@ -5164,38 +5177,10 @@ local _tpBatMaxRange    = 100
 local _tpBatAntiDieThread = nil
 local _tpBatLagThread     = nil
 
+-- TP Bat must not fake health or force local Humanoid states.
+-- A client cannot provide authoritative death protection.
 local function tpBatStartAntiDie()
-    if _tpBatAntiDieThread then return end
-    _tpBatAntiDieThread = task.spawn(function()
-        while batDesyncTpEnabled do
-            pcall(function()
-                local char = LP.Character
-                if not char then task.wait(0.1) return end
-                local hum  = char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    if hum.Health <= 0 then
-                        hum.Health = hum.MaxHealth
-                    end
-                    if hum.PlatformStand then hum.PlatformStand = false end
-                    if hum.Sit then hum.Sit = false end
-                    local st = hum:GetState()
-                    if st == Enum.HumanoidStateType.Physics
-                       or st == Enum.HumanoidStateType.Ragdoll
-                       or st == Enum.HumanoidStateType.FallingDown then
-                        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
-                        hum:ChangeState(Enum.HumanoidStateType.Running)
-                    end
-                end
-                if char then
-                    for _, p in ipairs(char:GetDescendants()) do
-                        if p:IsA("BasePart") then p.CanCollide = false end
-                    end
-                end
-            end)
-            task.wait(0.05)
-        end
-        _tpBatAntiDieThread = nil
-    end)
+    return
 end
 
 local function tpBatStopAntiDie()
@@ -5273,22 +5258,43 @@ local function tpBatHit()
         local bat = tpBatGetBat()
         if not bat then return end
         bat:Activate()
-        local remote = bat:FindFirstChildWhichIsA("RemoteEvent")
-        if remote then remote:FireServer() end
     end)
-    task.delay(0.08, function() _tpBatHitCooldown = false end)
+    task.delay(0.14, function() _tpBatHitCooldown = false end)
 end
 
 -- ══════════════════════════════════════════════════════
 -- TARGETING
 -- ══════════════════════════════════════════════════════
+local function tpBatPlayerHasBat(player)
+    if not player or player == LP then return false end
+
+    local function hasBat(container)
+        if not container then return false end
+        for _, item in ipairs(container:GetChildren()) do
+            local toolName = item:IsA("Tool") and item.Name:lower() or ""
+            local hasBaseballBatName = toolName == "bat"
+                or toolName:find("baseball bat", 1, true) ~= nil
+                or toolName:find("baseballbat", 1, true) ~= nil
+                or toolName:match("%f[%a]bat%f[%A]") ~= nil
+            if hasBaseballBatName then return true end
+        end
+        return false
+    end
+
+    local character = player.Character
+    local backpack = player:FindFirstChildOfClass("Backpack")
+        or player:FindFirstChild("Backpack")
+    return hasBat(character) or hasBat(backpack)
+end
+
 local function tpBatClosestPlayer(root)
     local closest, distance = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
-        local character  = player ~= LP and player.Character
+        local character = player ~= LP and player.Character
         local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid   = character and character:FindFirstChildOfClass("Humanoid")
-        if targetRoot and humanoid and humanoid.Health > 0 then
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        if targetRoot and humanoid and humanoid.Health > 0
+            and tpBatPlayerHasBat(player) then
             local candidateDistance = (root.Position - targetRoot.Position).Magnitude
             if candidateDistance < distance then
                 closest, distance = player, candidateDistance
@@ -5298,55 +5304,42 @@ local function tpBatClosestPlayer(root)
     return closest, distance
 end
 
--- ══════════════════════════════════════════════════════
--- NETWORK OWNER TELEPORT
--- ══════════════════════════════════════════════════════
-local function tpBatNetworkOwnerTeleport(root, targetRoot)
-    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(nil) end end)
-    local targetPosition = targetRoot.Position + _V3new(0, 0.9, 0)
-    root.CFrame = _CFnew(targetPosition)
+local function tpBatFollowTarget(root, targetRoot)
+    if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
+        return false
+    end
+    root.CFrame = targetRoot.CFrame
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
-    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(LP) end end)
+    return true
 end
 
--- ══════════════════════════════════════════════════════
--- UPDATE LOOP
--- ══════════════════════════════════════════════════════
 local function tpBatUpdate()
     if not batDesyncTpEnabled then return end
     local character = LP.Character
-    local root      = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
-    if not root or not humanoid then return end
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid or humanoid.Health <= 0 then return end
 
     local bat = tpBatGetBat()
-    if bat and bat.Parent ~= character then
+    if not bat then return end
+    if bat.Parent ~= character then
         pcall(function() humanoid:EquipTool(bat) end)
     end
 
-    local target, distance = tpBatClosestPlayer(root)
-    if not target or distance > _tpBatMaxRange then return end
-    local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-    if not targetRoot then return end
+    local target = tpBatClosestPlayer(root)
+    if not target then return end
 
-    tpBatNetworkOwnerTeleport(root, targetRoot)
+    local targetCharacter = target.Character
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+    if not targetRoot or not targetHumanoid or targetHumanoid.Health <= 0 then return end
 
-    local camera = workspace.CurrentCamera
-    if camera then
-        camera.CFrame = _CFnew(camera.CFrame.Position, targetRoot.Position)
-    end
+    -- Follow the eligible target's current position on each Heartbeat.
+    -- When no eligible target exists, remain at the last position.
+    if not tpBatFollowTarget(root, targetRoot) then return end
     tpBatHit()
-
-    pcall(function()
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = false end
-        end
-    end)
 end
 
--- ══════════════════════════════════════════════════════
--- START / STOP / TOGGLE
--- ══════════════════════════════════════════════════════
 function startAlvaroTP()
     if batDesyncTpConn then
         batDesyncTpConn:Disconnect()
@@ -5367,8 +5360,7 @@ function startAlvaroTP()
     batDesyncTpConn  = RunService.Heartbeat:Connect(tpBatUpdate)
     _G.AlvaroTP.conn = batDesyncTpConn
 
-    -- Anti-Die + Lagger integrados
-    tpBatStartAntiDie()
+    -- No client-side health manipulation or unsupported lag payload is started.
     tpBatStartLagger()
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
@@ -5387,16 +5379,9 @@ function stopAlvaroTP()
     _G.AlvaroTP.hittingCooldown = false
     _tpBatHitCooldown           = false
 
-    -- Apagar Anti-Die + Lagger
+    -- Clean up any legacy worker; no network ownership is changed by TP Bat.
     tpBatStopAntiDie()
     tpBatStopLagger()
-
-    local meRoot = _G.AlvaroTP.hrp
-    if meRoot and meRoot.Parent then
-        pcall(function()
-            if meRoot.SetNetworkOwner then meRoot:SetNetworkOwner(LP) end
-        end)
-    end
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
     updateTpBatButtonVisual(false)
@@ -5590,7 +5575,10 @@ end
 function startBatCounter()
     if Conns.batCounter then return end
     Conns.batCounter = RunService.Heartbeat:Connect(function()
-        if not batCounterEnabled then return end
+        if not batCounterEnabled then
+            stopBatCounter()
+            return
+        end
         if batCounterDebounce then return end
         local character = LP.Character
         if not character then return end
@@ -5839,8 +5827,10 @@ function runDropBrainrot()
                 rp.FilterDescendantsInstances = {c}
                 rp.FilterType = Enum.RaycastFilterType.Exclude
                 local rr = workspace:Raycast(r.Position, _V3new(0, -3000, 0), rp)
+                -- Keep the Humanoid reference in the enclosing pcall scope;
+                -- declaring it inside `if rr` made the state reset unreachable.
+                local hum2 = c:FindFirstChildOfClass("Humanoid")
                 if rr then
-                    local hum2 = c:FindFirstChildOfClass("Humanoid")
                     local off = ((hum2 and hum2.HipHeight) or 2) + (r.Size.Y / 2)
                     r.CFrame = _CFnew(r.Position.X, rr.Position.Y + off, r.Position.Z)
                     r.AssemblyLinearVelocity = _V3zero
@@ -6123,6 +6113,8 @@ local function restoreLightingState()
             cc.Saturation = old.ColorCorrection.Saturation
             cc.TintColor = old.ColorCorrection.TintColor
         end
+    elseif _neonCreatedColorCorrection and _neonCreatedColorCorrection.Parent then
+        _neonCreatedColorCorrection:Destroy()
     end
     if old.Bloom then
         local bloom = Lighting:FindFirstChildOfClass("BloomEffect")
@@ -6132,7 +6124,12 @@ local function restoreLightingState()
             bloom.Size = old.Bloom.Size
             bloom.Threshold = old.Bloom.Threshold
         end
+    elseif _neonCreatedBloom and _neonCreatedBloom.Parent then
+        _neonCreatedBloom:Destroy()
     end
+    _neonCreatedColorCorrection = nil
+    _neonCreatedBloom = nil
+    _originalLighting = nil
 end
 
 SKY_PRESETS_LIST = {"Off","Night","Aurora","Sunset","Galaxy","Cyber","Sakura","Pink Night","Blood Moon","Emerald Dawn","Volcanic","Arctic","Midnight Ocean","Vaporwave","Toxic","Solar Eclipse","Hellscape","Heaven","Storm","Sunrise","Deep Space","Lavender Dream","Inferno","Mint Sky"}
@@ -6278,6 +6275,8 @@ local function applyNeonWeather()
     local cc = Lighting:FindFirstChildOfClass("ColorCorrectionEffect")
     if not cc then
         cc = Instance.new("ColorCorrectionEffect")
+        cc.Name = "ShoxHubNeonColorCorrection"
+        _neonCreatedColorCorrection = cc
         cc.Parent = Lighting
     end
     cc.Enabled = true
@@ -6288,6 +6287,8 @@ local function applyNeonWeather()
     local bloom = Lighting:FindFirstChildOfClass("BloomEffect")
     if not bloom then
         bloom = Instance.new("BloomEffect")
+        bloom.Name = "ShoxHubNeonBloom"
+        _neonCreatedBloom = bloom
         bloom.Parent = Lighting
     end
     bloom.Enabled = true
@@ -6769,7 +6770,13 @@ do
             NPC.charConns[char] = nil
         end
 
-        for part in pairs(NPC.parts) do unlockPart(part) end
+        local partsToUnlock = {}
+        for part in pairs(NPC.parts) do
+            table.insert(partsToUnlock, part)
+        end
+        for _, part in ipairs(partsToUnlock) do
+            unlockPart(part)
+        end
         NPC.parts = {}
     end
 
@@ -6916,7 +6923,9 @@ function buildConfigTable()
         shoxHubAutoTPDown = ShoxHubAutoTPDown,
         shoxHubAutoTPDownHeight = ShoxHubAutoTPDownHeight,
         shoxHubShowE01Warning = ShoxHubShowE01Warning,
-        unwalk = unwalkEnabled,
+        -- TP Bat may temporarily force Unwalk for its own movement setup.
+        -- Do not persist that temporary state as the user's preference.
+        unwalk = unwalkEnabled and not _tpBatUnwalkForced,
         holdJumpEnabled = infJumpEnabled,
         holdJumpMode    = infJumpMode,
         mirrorTPDown    = mirrorTPDownEnabled,
@@ -7156,6 +7165,7 @@ function loadAllSettings()
     end
     ShoxHubAutoTPDown = data.shoxHubAutoTPDown == true
     ShoxHubAutoTPDownHeight = math.clamp(tonumber(data.shoxHubAutoTPDownHeight) or ShoxHubAutoTPDownHeight, 0, 500)
+    if ShoxHubAutoTPDownHeightBox then ShoxHubAutoTPDownHeightBox.Text = tostring(ShoxHubAutoTPDownHeight) end
     ShoxHubShowE01Warning = data.shoxHubShowE01Warning == true
     if ShoxHubAutoTPDownSetVisual then ShoxHubAutoTPDownSetVisual(ShoxHubAutoTPDown) end
     if ShoxHubShowE01WarningSetVisual then ShoxHubShowE01WarningSetVisual(ShoxHubShowE01Warning) end
@@ -7277,7 +7287,14 @@ function loadAllSettings()
     if fovEnabled then enableCustomFov() end
     if setFovVisual then setFovVisual(fovEnabled) end
     stretchFOV = data.stretchFOV or 120
-    BAT_AIMBOT_SPEED = data.batAimbotSpeed or BAT_AIMBOT_SPEED
+    local savedBatAimbotSpeed = tonumber(data.batAimbotSpeed)
+    -- Migrate the previous built-in default (58) to the faster V30 default.
+    -- Other saved values remain user-configurable, within the UI-supported range.
+    if savedBatAimbotSpeed == 58 then
+        BAT_AIMBOT_SPEED = 90
+    elseif savedBatAimbotSpeed then
+        BAT_AIMBOT_SPEED = readNumber(savedBatAimbotSpeed, BAT_AIMBOT_SPEED, 1, 200)
+    end
     floatingButtonScale = data.floatingButtonScale or 1
     local savedOutfitIndex = readNumber(data.outfitIndex, 0, 0, #OUTFITS)
     savedOutfitIndex = math.floor(savedOutfitIndex)
@@ -7589,7 +7606,7 @@ function resetToFactoryDefaults()
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
-        BAT_AIMBOT_SPEED = 58
+        BAT_AIMBOT_SPEED = 90
         dropMode = 1
         stretchEnabled = false
         stretchFOV = 120
@@ -8015,7 +8032,7 @@ function buildGui()
     Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
     closeBtn.MouseEnter:Connect(function()
-        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = getThemeColor()}):Play()
+        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = Color3.fromRGB(20,20,24), BackgroundColor3 = getThemeColor()}):Play()
     end)
     closeBtn.MouseLeave:Connect(function()
         TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(30,30,35)}):Play()
@@ -8507,10 +8524,31 @@ function buildGui()
         bs.Color = ROW_BORDER
         bs.Thickness = 1.2
         bs.Transparency = 0.25
-        tb.Focused:Connect(function() TS:Create(bs, TweenInfo.new(0.12), {Color = getThemeColor(), Transparency = 0}):Play() end)
+        local lastValidValue = tonumber(default) or 0
+        tb.Focused:Connect(function()
+            TS:Create(bs, TweenInfo.new(0.12), {Color = getThemeColor(), Transparency = 0}):Play()
+            -- Select the existing value so it can be replaced in one action.
+            task.defer(function()
+                if tb.Parent and tb:IsFocused() then
+                    tb.SelectionStart = 1
+                    tb.CursorPosition = #tb.Text + 1
+                end
+            end)
+        end)
         tb.FocusLost:Connect(function()
             TS:Create(bs, TweenInfo.new(0.12), {Color = ROW_BORDER, Transparency = 0.25}):Play()
-            if cb then local n = tonumber(tb.Text); if n then cb(n) else tb.Text = tostring(default) end end
+            if cb then
+                local n = tonumber(tb.Text)
+                if n and n == n and n ~= math.huge and n ~= -math.huge then
+                    lastValidValue = n
+                    cb(n)
+                    if not _isLoading and not _isResetting and saveAllSettings then
+                        pcall(saveAllSettings)
+                    end
+                else
+                    tb.Text = tostring(lastValidValue)
+                end
+            end
         end)
         return tb
     end
@@ -8534,20 +8572,42 @@ function buildGui()
         bs.Color = ROW_BORDER
         bs.Thickness = 1
         local li = false; local lc; local pv = btn.Text; local listenStart = 0
+        local captureTimeout = nil
+        local function stopCapture(restoreText)
+            li = false
+            if lc then lc:Disconnect(); lc = nil end
+            if captureTimeout then
+                local timeoutThread = captureTimeout
+                captureTimeout = nil
+                pcall(task.cancel, timeoutThread)
+            end
+            if _activeKeyCapture == stopCapture then _activeKeyCapture = nil; _anyKeyListening = false end
+            if restoreText and btn.Parent then btn.Text = pv end
+            if btn.Parent then btn.TextColor3 = WHITE end
+        end
         btn.Activated:Connect(function()
-            if li then li = false; _anyKeyListening = false; if lc then lc:Disconnect(); lc = nil end; btn.Text = pv; btn.TextColor3 = WHITE; return end
-            pv = btn.Text; li = true; _anyKeyListening = true; listenStart = _tick(); btn.Text = "..."; btn.TextColor3 = WHITE
+            if li then stopCapture(true); return end
+            if _activeKeyCapture and _activeKeyCapture ~= stopCapture then
+                pcall(_activeKeyCapture, true)
+            end
+            pv = btn.Text; li = true; _anyKeyListening = true; _activeKeyCapture = stopCapture
+            listenStart = _tick(); btn.Text = "..."; btn.TextColor3 = WHITE
             lc = UIS.InputBegan:Connect(function(inp)
                 if not li then return end
-                if inp.KeyCode == Enum.KeyCode.Escape then li = false; _anyKeyListening = false; if lc then lc:Disconnect(); lc = nil end; btn.Text = pv; btn.TextColor3 = WHITE; return end
+                if inp.KeyCode == Enum.KeyCode.Escape then stopCapture(true); return end
                 local isGp = isGamepadInput(inp)
                 if isGp and _tick()-listenStart < 0.15 then return end
                 if not isBindableInput(inp) then return end
-                btn.Text = inp.KeyCode.Name; pv = inp.KeyCode.Name; btn.TextColor3 = WHITE
-                li = false; _anyKeyListening = false; if lc then lc:Disconnect(); lc = nil end
+                btn.Text = inp.KeyCode.Name; pv = inp.KeyCode.Name
                 if isGp then kbEntry.gp = inp.KeyCode; kbEntry.kb = nil else kbEntry.kb = inp.KeyCode; kbEntry.gp = nil end
+                stopCapture(false)
+            end)
+            captureTimeout = task.delay(15, function()
+                captureTimeout = nil
+                if li then stopCapture(true) end
             end)
         end)
+        btn.Destroying:Connect(function() if li then stopCapture(false) end end)
         table.insert(keyButtonRefs, {btn = btn, entry = kbEntry})
         return btn
     end
@@ -8693,8 +8753,18 @@ function buildGui()
         refreshDotsSilent()
 
         local proxy = {}
+        local labelProperties = {
+            Text = true, TextColor3 = true, Font = true, TextSize = true,
+            TextXAlignment = true, TextYAlignment = true, TextWrapped = true,
+            TextScaled = true, TextTruncate = true, TextTransparency = true,
+            TextStrokeColor3 = true, TextStrokeTransparency = true,
+        }
         setmetatable(proxy, {
-            __index = function(_, k) return label[k] end,
+            __index = function(_, k)
+                if k == "Parent" then return container end
+                if labelProperties[k] then return label[k] end
+                return container[k]
+            end,
             __newindex = function(_, k, v)
                 if k == "Text" then
                     local newText = tostring(v)
@@ -8706,8 +8776,10 @@ function buildGui()
                         end
                     end
                     label.Text = newText
-                else
+                elseif labelProperties[k] then
                     label[k] = v
+                else
+                    container[k] = v
                 end
             end,
         })
@@ -8844,7 +8916,7 @@ function buildGui()
     do
         local row = mkRow(speedPage, 38)
         mkLabel(row, "TP Down Height")
-        mkBox(row, ShoxHubAutoTPDownHeight, 50, 56, function(value)
+        ShoxHubAutoTPDownHeightBox = mkBox(row, ShoxHubAutoTPDownHeight, 50, 56, function(value)
             ShoxHubAutoTPDownHeight = math.clamp(value, 0, 500)
             saveAllSettings()
         end)
@@ -10930,8 +11002,17 @@ local LastPosMarker = (function()
         markerTarget    = nil,
         samples         = {},
         conn            = nil,
+        playerRemovingConn = nil,
         acc             = 0,
     }
+
+    state.playerRemovingConn = LPM_Players.PlayerRemoving:Connect(function(player)
+        state.samples[player] = nil
+        if state.markerTarget == player then
+            state.markerTarget = nil
+            state.markerLocked = false
+        end
+    end)
 
     local function finiteVector(v)
         return v ~= nil
@@ -11170,6 +11251,11 @@ local LastPosMarker = (function()
 
     function api.Destroy()
         api.Stop()
+        if state.playerRemovingConn then
+            state.playerRemovingConn:Disconnect()
+            state.playerRemovingConn = nil
+        end
+        table.clear(state.samples)
         if state.marker and state.marker.Parent then
             pcall(function() state.marker:Destroy() end)
         end
