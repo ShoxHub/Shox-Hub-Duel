@@ -19,9 +19,8 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
--- Prefer the requested Creepster face when the runtime exposes it; fall back safely.
-local SHOX_UI_FONT = Enum.Font.GothamBold
-pcall(function() SHOX_UI_FONT = Enum.Font.Creepster end)
+-- Use the requested SourceSansBold font consistently throughout the UI.
+local SHOX_UI_FONT = Enum.Font.SourceSansBold
 
 local ShoxIntro = {
     Running = true,
@@ -3720,7 +3719,7 @@ local function clearESP()
     end
     for plr in pairs(espTracerCache) do
         for _, ln in ipairs(espTracerCache[plr]) do
-            pcall(function() ln.Visible = false; ln:Remove() end)
+            pcall(function() ln.Visible = false; ln:Destroy() end)
         end
     end
     espHighlightCache = {}
@@ -3778,7 +3777,7 @@ local function updateESP()
     for plr in pairs(espTracerCache) do
         if not plrSet[plr] then
             for _, ln in ipairs(espTracerCache[plr]) do
-                pcall(function() ln.Visible = false; ln:Remove() end)
+                pcall(function() ln.Visible = false; ln:Destroy() end)
             end
             espTracerCache[plr] = nil
         end
@@ -5882,8 +5881,8 @@ local function applyAntiLagDerender(obj)
     pcall(function()
         if not obj or obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
 
-        -- Nur Effekt-Instanzen anfassen. Keine Parts, Decals, Texturen,
-        -- Accessories, Tools, Models oder sonstige Gegenstände verändern.
+        local isPart = obj:IsA("BasePart")
+        local isSurfaceImage = obj:IsA("Decal") or obj:IsA("Texture")
         local isEffect =
             obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
             or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
@@ -5893,15 +5892,31 @@ local function applyAntiLagDerender(obj)
             or obj:IsA("DepthOfFieldEffect") or obj:IsA("BrightnessEffect")
             or obj:IsA("DitheringEffect")
 
-        if not isEffect then return end
-        if obj:IsA("PostEffect") and obj.Parent == Lighting and skyTheme ~= "Off" then
+        if not isPart and not isSurfaceImage and not isEffect then return end
+        if isEffect and obj:IsA("PostEffect") and obj.Parent == Lighting and skyTheme ~= "Off" then
             return
         end
 
-        if antiLagOriginalProperties[obj] == nil then
-            antiLagOriginalProperties[obj] = {Enabled = obj.Enabled}
+        -- Save each eligible object's original look once so Anti-Lag can be toggled off.
+        local props = antiLagOriginalProperties[obj]
+        if props == nil then
+            props = {}
+            antiLagOriginalProperties[obj] = props
         end
-        obj.Enabled = false
+
+        -- Reduce map surface detail locally without deleting or moving instances.
+        if isPart then
+            if props.Material == nil then props.Material = obj.Material end
+            if props.Reflectance == nil then props.Reflectance = obj.Reflectance end
+            obj.Material = Enum.Material.SmoothPlastic
+            obj.Reflectance = 0
+        elseif isSurfaceImage then
+            if props.Transparency == nil then props.Transparency = obj.Transparency end
+            obj.Transparency = 1
+        else
+            if props.Enabled == nil then props.Enabled = obj.Enabled end
+            obj.Enabled = false
+        end
     end)
 end
 
@@ -5965,14 +5980,17 @@ function disableAntiLag()
         antiLagLightingConn = nil
     end
 
-    -- Alle zuvor deaktivierten Effekte auf ihren Originalzustand zurücksetzen.
-    for effect, props in pairs(antiLagOriginalProperties) do
-        if effect and effect.Parent then
+    -- Restore original visual properties for effects, map parts and textures.
+    for obj, props in pairs(antiLagOriginalProperties) do
+        if obj and obj.Parent then
             pcall(function()
-                effect.Enabled = props.Enabled
+                if props.Enabled ~= nil then obj.Enabled = props.Enabled end
+                if props.Material ~= nil then obj.Material = props.Material end
+                if props.Reflectance ~= nil then obj.Reflectance = props.Reflectance end
+                if props.Transparency ~= nil then obj.Transparency = props.Transparency end
             end)
         end
-        antiLagOriginalProperties[effect] = nil
+        antiLagOriginalProperties[obj] = nil
     end
 end
 
@@ -8805,7 +8823,18 @@ function buildGui()
     local speedPage = contentPages["Speed"]
 
     mkSect(speedPage, "Base Speeds")
-    do local row = mkRow(speedPage, 38); mkLabel(row, "Normal Speed");    normalBox  = mkBox(row, NS, 50, 56, function(v) if v > 0 and v <= 500 then NS = v end end) end
+    do
+        local row = mkRow(speedPage, 38)
+        mkLabel(row, "Normal Speed")
+        normalBox = mkBox(row, NS, 50, 56, function(v)
+            if v > 0 and v <= 500 then
+                NS = v
+                CarrySystem:setNormalSpeed(v)
+                if carrySysNormalBox then carrySysNormalBox.Text = tostring(v) end
+                saveAllSettings()
+            end
+        end)
+    end
     do
         local row = mkRow(speedPage, 38)
         mkLabel(row, "Carry Speed")
