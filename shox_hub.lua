@@ -772,12 +772,17 @@ function CarrySystem:stop()
     print("[CarrySystem] Desactivado")
 end
 
-function CarrySystem:setNormalSpeed(v) self.normalSpeed = _clamp(v,1,500) end
-function CarrySystem:setCarrySpeed(v) self.carrySpeed = _clamp(v,1,500) end
-function CarrySystem:setLaggerSpeed(v) self.laggerSpeed = _clamp(v,0.1,500) end
-function CarrySystem:setLaggerCarrySpeed(v) self.laggerCarrySpeed = _clamp(v,0.1,500) end
-function CarrySystem:setSoftStealSpeed(v) self.softStealSpeed = _clamp(v,1,500) end
-function CarrySystem:setSoftStealRadius(v) self.softStealRadius = _clamp(v,1,200) end
+local function _safeCarryNumber(value, fallback, minimum, maximum)
+    local n = tonumber(value)
+    if not n or n ~= n or n == math.huge or n == -math.huge then return fallback end
+    return _clamp(n, minimum, maximum)
+end
+function CarrySystem:setNormalSpeed(v) self.normalSpeed = _safeCarryNumber(v, self.normalSpeed, 1, 500) end
+function CarrySystem:setCarrySpeed(v) self.carrySpeed = _safeCarryNumber(v, self.carrySpeed, 1, 500) end
+function CarrySystem:setLaggerSpeed(v) self.laggerSpeed = _safeCarryNumber(v, self.laggerSpeed, 0.1, 500) end
+function CarrySystem:setLaggerCarrySpeed(v) self.laggerCarrySpeed = _safeCarryNumber(v, self.laggerCarrySpeed, 0.1, 500) end
+function CarrySystem:setSoftStealSpeed(v) self.softStealSpeed = _safeCarryNumber(v, self.softStealSpeed, 1, 500) end
+function CarrySystem:setSoftStealRadius(v) self.softStealRadius = _safeCarryNumber(v, self.softStealRadius, 1, 200) end
 
 function CarrySystem:toggleCarryMode() self.speedToggled = not self.speedToggled end
 function CarrySystem:setLaggerMode(mode)
@@ -2632,9 +2637,13 @@ local function findNearestPrompt()
     local rpos = root.Position
     local cached = _nearestPromptCache
     if cached.valid and cached.position and _tick() - cached.time < 0.12
-       and (rpos - cached.position).Magnitude < 4
-       and (not cached.prompt or cached.prompt.Parent) then
-        return cached.prompt, cached.name
+       and (rpos - cached.position).Magnitude < 4 then
+        if cached.prompt and cached.prompt.Parent then
+            return cached.prompt, cached.name
+        elseif cached.prompt == nil then
+            return nil, nil
+        end
+        -- A destroyed cached prompt is stale; continue with a fresh scan.
     end
     for _, plot in ipairs(plotsRoot:GetChildren()) do
         if isMyPlotByName(plot.Name) then continue end
@@ -6214,6 +6223,7 @@ function applyCustomSky(mode)
     local preset = SKY_PRESETS[mode]
     if not preset or preset.kind == "off" then
         _shoxRestoreLighting()
+        _shoxOriginalLighting = nil
         skyTheme = "Off"
         return
     end
@@ -7109,9 +7119,9 @@ function loadAllSettings()
     LAGGER_CARRY_SPEED = readNumber(data.laggerSpeed2, LAGGER_CARRY_SPEED, 1, 500)
     CONFIG.STEAL_RANGE = readNumber(data.stealRadius, CONFIG.STEAL_RANGE, 1, 500)
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
-    if data.lockUI ~= nil then uiLocked = data.lockUI else uiLocked = false end
-    if data.editMode ~= nil then editModeEnabled = data.editMode else editModeEnabled = false end
-    if data.mobileButtonsLocked ~= nil then mobileButtonsLocked = data.mobileButtonsLocked else mobileButtonsLocked = false end
+    uiLocked = data.lockUI == true
+    editModeEnabled = data.editMode == true
+    mobileButtonsLocked = data.mobileButtonsLocked == true
     if data.antiRagdollMode then
         antiRagdollMode = data.antiRagdollMode
     else
@@ -7128,9 +7138,9 @@ function loadAllSettings()
     speedMode = data.carryMode or false
     laggerCarryToggled = data.laggerCarryToggled or false
 
-    uiScaleValue = data.uiScale or 78
+    uiScaleValue = readNumber(data.uiScale, uiScaleValue or 78, 50, 150)
     if mainUIScale then mainUIScale.Scale = uiScaleValue / 100 end
-    progressBarScale = data.progressBarScale or 1
+    progressBarScale = readNumber(data.progressBarScale, progressBarScale or 1, 0.5, 2)
     if pbScale then pbScale.Scale = progressBarScale end
     espEnabled = data.espEnabled or false
     if espEnabled then toggleESP(true) else toggleESP(false) end
@@ -7248,7 +7258,7 @@ function loadAllSettings()
     lk(KB.TPBat, data.tpBatKey)
     lk(KB.BatV2, data.batV2Key)
     lk(KB.InstaReset, data.instaResetKey)
-    if data.mobileButtonPositions then savedButtonPositions = data.mobileButtonPositions end
+    if type(data.mobileButtonPositions) == "table" then savedButtonPositions = data.mobileButtonPositions end
     do
         local oldDefaults = {
             AutoLeft = {68, 0}, AutoBat = {0, 78}, AutoRight = {68, 78},
@@ -7262,10 +7272,10 @@ function loadAllSettings()
             end
         end
     end
-    if data.mobilePanelPos then savedMobilePanelPos = data.mobilePanelPos end
-    if data.batV2FloatingPos then batV2FloatingPos = data.batV2FloatingPos end
-    if data.instaResetFloatingPos then instaResetFloatingPos = data.instaResetFloatingPos end
-    if data.progressBarPos then savedProgressBarPos = data.progressBarPos end
+    if type(data.mobilePanelPos) == "table" then savedMobilePanelPos = data.mobilePanelPos end
+    if type(data.batV2FloatingPos) == "table" then batV2FloatingPos = data.batV2FloatingPos end
+    if type(data.instaResetFloatingPos) == "table" then instaResetFloatingPos = data.instaResetFloatingPos end
+    if type(data.progressBarPos) == "table" then savedProgressBarPos = data.progressBarPos end
     if data.bodyLockEnabled ~= nil then
         bodyLockEnabled = data.bodyLockEnabled
         if bodyLockEnabled then
@@ -7279,14 +7289,14 @@ function loadAllSettings()
         bodyLockRange = readNumber(data.bodyLockRange, bodyLockRange or 20, 5, 200)
         if bodyLockRangeBox then bodyLockRangeBox.Text = tostring(bodyLockRange) end
     end
-    dropMode = data.dropMode or 1
+    dropMode = (data.dropMode == 2) and 2 or 1
     stretchEnabled = data.stretchEnabled or false
-    fovValue = data.fovValue or 70
+    fovValue = readNumber(data.fovValue, fovValue or 70, 20, 120)
     fovEnabled = data.fovEnabled or false
     if fovSliderSet then fovSliderSet(fovValue) end
     if fovEnabled then enableCustomFov() end
     if setFovVisual then setFovVisual(fovEnabled) end
-    stretchFOV = data.stretchFOV or 120
+    stretchFOV = readNumber(data.stretchFOV, stretchFOV or 120, 1, 200)
     local savedBatAimbotSpeed = tonumber(data.batAimbotSpeed)
     -- Migrate the previous built-in default (58) to the faster V30 default.
     -- Other saved values remain user-configurable, within the UI-supported range.
@@ -7295,7 +7305,7 @@ function loadAllSettings()
     elseif savedBatAimbotSpeed then
         BAT_AIMBOT_SPEED = readNumber(savedBatAimbotSpeed, BAT_AIMBOT_SPEED, 1, 200)
     end
-    floatingButtonScale = data.floatingButtonScale or 1
+    floatingButtonScale = readNumber(data.floatingButtonScale, floatingButtonScale or 1, 0.5, 2)
     local savedOutfitIndex = readNumber(data.outfitIndex, 0, 0, #OUTFITS)
     savedOutfitIndex = math.floor(savedOutfitIndex)
     if savedOutfitIndex >= 1 and savedOutfitIndex <= #OUTFITS then
@@ -7309,18 +7319,18 @@ function loadAllSettings()
     end
 
     if data.backgroundIndex then
-        backgroundIndex = _clamp(data.backgroundIndex, 1, #BACKGROUND_IMAGES)
+        backgroundIndex = math.floor(readNumber(data.backgroundIndex, backgroundIndex, 1, #BACKGROUND_IMAGES) + 0.5)
     end
     if data.backgroundImageTransparency ~= nil then
-        backgroundImageTransparency = _clamp(data.backgroundImageTransparency, 0, 1)
+        backgroundImageTransparency = readNumber(data.backgroundImageTransparency, backgroundImageTransparency, 0, 1)
     end
 
     useCarrySystem = data.useCarrySystem or false
-    autoStealVariant = _clamp(tonumber(data.autoStealVariant) or 1, 1, 3)
+    autoStealVariant = math.floor(_clamp(readNumber(data.autoStealVariant, autoStealVariant or 1, 1, 3), 1, 3))
     if autoStealVariantLabel then
         autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant)
     end
-    CarrySystem.normalSpeed = tonumber(data.carrySysNormal) or NS
+    CarrySystem.normalSpeed = readNumber(data.carrySysNormal, NS, 1, 500)
     local savedBaseCarry = tonumber(data.carrySpeed)
     local savedSystemCarry = tonumber(data.carrySysCarry)
     local loadedCarrySpeed = math.max(savedBaseCarry or 0, savedSystemCarry or 0)
@@ -7331,10 +7341,10 @@ function loadAllSettings()
     CarrySystem.carrySpeed = CS
     if carryBox then carryBox.Text = tostring(CS) end
     if carrySysCarryBox then carrySysCarryBox.Text = tostring(CS) end
-    CarrySystem.laggerSpeed = tonumber(data.carrySysLagger) or LAGGER_SPEED
-    CarrySystem.laggerCarrySpeed = data.carrySysLaggerCarry or LAGGER_CARRY_SPEED
-    CarrySystem.softStealSpeed = data.carrySysSoftStealSpeed or 30
-    CarrySystem.softStealRadius = data.carrySysSoftStealRadius or 10
+    CarrySystem.laggerSpeed = readNumber(data.carrySysLagger, LAGGER_SPEED, 0.1, 500)
+    CarrySystem.laggerCarrySpeed = readNumber(data.carrySysLaggerCarry, LAGGER_CARRY_SPEED, 0.1, 500)
+    CarrySystem.softStealSpeed = readNumber(data.carrySysSoftStealSpeed, CarrySystem.softStealSpeed or 30, 1, 500)
+    CarrySystem.softStealRadius = readNumber(data.carrySysSoftStealRadius, CarrySystem.softStealRadius or 10, 1, 200)
     if useCarrySystem then
         CarrySystem:start()
         CarrySystem.speedToggled = speedMode
