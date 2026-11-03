@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.0"
+ShoxHubState.Version     = "v1.0.1"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -40,7 +40,7 @@ function ShoxHubState:Destroy()
             if gui then pcall(function() gui:Destroy() end) end
         end
     end
-    print("[ShoxHub v1.0] Destroyed — Instanz freigegeben.")
+    print("[ShoxHub v1.0.1] Destroyed — Instanz freigegeben.")
 end
 
 _G.BloodHoundsRunning = true
@@ -57,7 +57,7 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
--- v1.0: Unified font matches CTD intro brand (GothamBlack).
+-- v1.0.1: Unified font matches CTD intro brand (GothamBlack).
 local SHOX_UI_FONT = Enum.Font.GothamBlack
 
 local ShoxIntro = {
@@ -168,27 +168,9 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    -- v1.0: CTD Intro 1:1 — theme-aware accent.
-    local introThemes = {
-        Black   = Color3.fromRGB(175, 175, 190),
-        White   = Color3.fromRGB(55, 65, 80),
-        Blue    = Color3.fromRGB(35, 125, 255),
-        Lava    = Color3.fromRGB(255, 83, 35),
-        Neutral = Color3.fromRGB(125, 130, 140),
-    }
-    local savedIntroTheme = "Neutral"
-    pcall(function()
-        if isfile and readfile and isfile("FictionHub.json") then
-            local cfg = ShoxHubHttpService:JSONDecode(readfile("FictionHub.json"))
-            if type(cfg) == "table" and introThemes[cfg.themeColor] then
-                savedIntroTheme = cfg.themeColor
-            end
-        end
-    end)
-    local accent = introThemes[savedIntroTheme]
-    local subColor = savedIntroTheme == "White"
-        and Color3.fromRGB(75, 80, 95)
-        or  Color3.fromRGB(190, 200, 215)
+    -- v1.0.1: Pure Black & White Intro exact match.
+    local accent = Color3.fromRGB(255, 255, 255)
+    local subColor = Color3.fromRGB(200, 200, 200)
     local introParent = shoxIntroParent()
     pcall(function()
         local old = introParent:FindFirstChild("ShoxHubIntro") or introParent:FindFirstChild("ShoxCodeSniperIntro")
@@ -208,7 +190,7 @@ local function shoxIntroPlay()
     local base = math.clamp(math.min(viewport.X * 0.6 / 376, viewport.Y * 0.4 / 80), 0.5, 3)
     local bg = shoxIntroMake("Frame", {
         Name = "IntroBG", Size = UDim2.fromScale(1, 1),
-        BackgroundColor3 = Color3.fromRGB(10, 22, 40),
+        BackgroundColor3 = Color3.fromRGB(0, 0, 0),
         BackgroundTransparency = 1, BorderSizePixel = 0, Active = false,
     }, gui)
     shoxIntroTween(bg, {BackgroundTransparency = 0}, 0.3)
@@ -243,7 +225,7 @@ local function shoxIntroPlay()
     local subtitle = shoxIntroMake("TextLabel", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 80),
         Size = UDim2.fromOffset(376, 22), BackgroundTransparency = 1,
-        Text = "discord.gg/EA7xS26mA9", Font = Enum.Font.GothamBold,
+        Text = "discord.gg/EA7xS26mA9", Font = SHOX_UI_FONT,
         TextSize = 17, TextColor3 = subColor, TextTransparency = 1,
     }, stage)
     local flash = shoxIntroMake("Frame", {
@@ -252,9 +234,9 @@ local function shoxIntroPlay()
     }, gui)
     local skip = shoxIntroMake("TextButton", {
         AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 14),
-        Size = UDim2.fromOffset(78, 32), BackgroundColor3 = Color3.fromRGB(24, 48, 80),
-        Text = "Skip", TextColor3 = Color3.fromRGB(225, 242, 255),
-        Font = Enum.Font.GothamBold, TextSize = 14, AutoButtonColor = false,
+        Size = UDim2.fromOffset(78, 32), BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+        Text = "Skip", TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = SHOX_UI_FONT, TextSize = 14, AutoButtonColor = false,
         BorderSizePixel = 0, ZIndex = 10, Active = true,
     }, gui)
     shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
@@ -415,14 +397,14 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- v1.0: Warn-Throttling gegen Log-Spam aus Loops.
+-- v1.0.1: Warn-Throttling gegen Log-Spam aus Loops.
 local _shoxWarnLast = {}
 local function shoxWarn(key, msg, interval)
     interval = interval or 5
     local now = os.clock()
     if _shoxWarnLast[key] and now - _shoxWarnLast[key] < interval then return end
     _shoxWarnLast[key] = now
-    warn("[ShoxHub v1.0][" .. tostring(key) .. "] " .. tostring(msg))
+    warn("[ShoxHub v1.0.1][" .. tostring(key) .. "] " .. tostring(msg))
 end
 
 local _tick          = tick
@@ -6980,7 +6962,7 @@ ShoxHubAutoTPDownHeight = tonumber(ShoxHubAutoTPDownHeight) or 20
 ShoxHubShowE01Warning = ShoxHubShowE01Warning == true
 function buildConfigTable()
     local config = {
-        schemaVersion = 2, -- v1.0
+        schemaVersion = 2, -- v1.0.1
         normalSpeed = NS,
         carrySpeed = CS,
         laggerSpeed1 = LAGGER_SPEED,
@@ -7474,7 +7456,7 @@ function loadAllSettings()
 
     _isLoading = false
     if not loadOk then
-        warn("[ShoxHub v1.0] loadAllSettings partial failure: " .. tostring(loadErr))
+        warn("[ShoxHub v1.0.1] loadAllSettings partial failure: " .. tostring(loadErr))
         return false
     end
     return true
@@ -7744,7 +7726,7 @@ function resetToFactoryDefaults()
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
-        -- v1.0 fix: gültiger Theme-Key
+        -- v1.0.1 fix: gültiger Theme-Key
         currentColorTheme = "Monochrome"
         selectedColor = COLOR_THEMES["Monochrome"]
         backgroundIndex = 1
@@ -11610,7 +11592,7 @@ end)
 
 
 -- ═══════════════════════════════════════════════════════════════
--- ShoxHub v1.0 — Global Destroy
+-- ShoxHub v1.0.1 — Global Destroy
 -- ═══════════════════════════════════════════════════════════════
 _G.ShoxHubDestroy = function() ShoxHubState:Destroy() end
-print("[ShoxHub v1.0] Loaded. Version: " .. tostring(ShoxHubState.Version))
+print("[ShoxHub v1.0.1] Loaded. Version: " .. tostring(ShoxHubState.Version))
