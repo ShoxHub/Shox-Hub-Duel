@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.0.1"
+ShoxHubState.Version     = "v1.2.0"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -40,7 +40,7 @@ function ShoxHubState:Destroy()
             if gui then pcall(function() gui:Destroy() end) end
         end
     end
-    print("[ShoxHub v1.0.1] Destroyed — Instanz freigegeben.")
+    print("[ShoxHub v1.2.0] Destroyed — Instanz freigegeben.")
 end
 
 _G.BloodHoundsRunning = true
@@ -57,7 +57,7 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
--- v1.0.1: Unified font matches CTD intro brand (GothamBlack).
+-- v1.2.0: Unified font matches CTD intro brand (GothamBlack).
 local SHOX_UI_FONT = Enum.Font.GothamBlack
 
 local ShoxIntro = {
@@ -168,7 +168,7 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    -- v1.0.1: Pure Black & White Intro exact match.
+    -- v1.2.0: Pure Black & White Intro exact match.
     local accent = Color3.fromRGB(255, 255, 255)
     local subColor = Color3.fromRGB(200, 200, 200)
     local introParent = shoxIntroParent()
@@ -397,14 +397,14 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- v1.0.1: Warn-Throttling gegen Log-Spam aus Loops.
+-- v1.2.0: Warn-Throttling gegen Log-Spam aus Loops.
 local _shoxWarnLast = {}
 local function shoxWarn(key, msg, interval)
     interval = interval or 5
     local now = os.clock()
     if _shoxWarnLast[key] and now - _shoxWarnLast[key] < interval then return end
     _shoxWarnLast[key] = now
-    warn("[ShoxHub v1.0.1][" .. tostring(key) .. "] " .. tostring(msg))
+    warn("[ShoxHub v1.2.0][" .. tostring(key) .. "] " .. tostring(msg))
 end
 
 local _tick          = tick
@@ -2791,6 +2791,7 @@ local function executeSteal(prompt, podName)
             if progressFill then progressFill.Size = UDim2.new(stopProgress, 0, 1, 0) end
             if progressPct then progressPct.Text = _floor(stopProgress * 100) .. "%" end
             local phase2Timeout = math.max(2.99 - stopTime - math.max(duration - stopTime, 0), 0.05)
+            if phase2Timeout > 5 then phase2Timeout = 5 end -- Fail-safe gegen Endlosschleife
             local phase2Start = _tick()
             while isStealing and Steal.AutoStealEnabled do
                 if _tick() - phase2Start >= phase2Timeout then
@@ -4277,6 +4278,8 @@ end
 function resetMovementState()
     refreshSpeedModeLabel()
     if mobSetCarry then mobSetCarry(speedMode) end
+    if mobSetLagger1 then mobSetLagger1(laggerToggled) end
+    if mobSetLagger2 then mobSetLagger2(laggerCarryToggled) end
     if setLaggerModeVisual then setLaggerModeVisual(laggerToggled) end
     if setLaggerCarryVisual then setLaggerCarryVisual(laggerCarryToggled) end
     if CarrySystem then
@@ -4341,11 +4344,15 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
     local alpha = 1 - math.exp(-safeDt * 24)
 
-    root.AssemblyLinearVelocity = _V3new(
-        current.X + (desiredX - current.X) * alpha,
-        current.Y,
-        current.Z + (desiredZ - current.Z) * alpha
-    )
+    -- v1.2.0: Geschwindigkeit exakt auf Target normalisieren (kein 53-Speed Verlust mehr)
+    local targetVel = _V3new(desiredX, 0, desiredZ)
+    local smoothed = _V3new(current.X, 0, current.Z):Lerp(targetVel, alpha)
+    if smoothed.Magnitude > 0.001 then
+        smoothed = smoothed.Unit * speed
+    else
+        smoothed = targetVel
+    end
+    root.AssemblyLinearVelocity = _V3new(smoothed.X, current.Y, smoothed.Z)
 end
 
 function stopAutoLeft()
@@ -4592,7 +4599,8 @@ function trySwing()
             return
         end
         bat:Activate()
-        _nextBatSwingAt = now + 0.14
+        -- v1.2.0: Von 0.14 auf 0.1 reduziert für bessere Duell-Chancen
+        _nextBatSwingAt = now + 0.1
     end)
     if not ok then _nextBatSwingAt = now + 0.2 end
 end
@@ -4662,6 +4670,13 @@ function startAimbotAdapt()
         local maxDelta = 420 * safeDt
         if velocityDelta.Magnitude > maxDelta then
             nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
+        end
+        -- v1.2.0: Aimbot Geschwindigkeit normalisieren
+        local flatNext = _V3new(nextVelocity.X, 0, nextVelocity.Z)
+        local flatDesired = _V3new(desiredVel.X, 0, desiredVel.Z)
+        if flatNext.Magnitude > 0.1 and flatDesired.Magnitude > 0.1 then
+            flatNext = flatNext.Unit * flatDesired.Magnitude
+            nextVelocity = _V3new(flatNext.X, nextVelocity.Y, flatNext.Z)
         end
         root.AssemblyLinearVelocity = nextVelocity
         local speed3 = targetVel.Magnitude
@@ -5059,6 +5074,13 @@ function BB.Start()
             if velocityDelta.Magnitude > maxDelta then
                 nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
             end
+            -- v1.2.0: Bat Bypass Geschwindigkeit normalisieren
+            local flatNext = Vector3.new(nextVelocity.X, 0, nextVelocity.Z)
+            local flatDesired = Vector3.new(desiredVelocity.X, 0, desiredVelocity.Z)
+            if flatNext.Magnitude > 0.1 and flatDesired.Magnitude > 0.1 then
+                flatNext = flatNext.Unit * flatDesired.Magnitude
+                nextVelocity = Vector3.new(flatNext.X, nextVelocity.Y, flatNext.Z)
+            end
             root.AssemblyLinearVelocity = nextVelocity
         else
             root.AssemblyLinearVelocity = Vector3.new(
@@ -5364,7 +5386,9 @@ local function tpBatFollowTarget(root, targetRoot)
     if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
         return false
     end
-    root.CFrame = targetRoot.CFrame
+    -- v1.2.0: Offset hinter den Gegner setzen, damit Roblox Physik/Server die Hits registriert
+    local offsetCF = CFrame.new(0, 1.2, -2.5)
+    root.CFrame = targetRoot.CFrame * offsetCF
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
     return true
 end
@@ -6962,7 +6986,7 @@ ShoxHubAutoTPDownHeight = tonumber(ShoxHubAutoTPDownHeight) or 20
 ShoxHubShowE01Warning = ShoxHubShowE01Warning == true
 function buildConfigTable()
     local config = {
-        schemaVersion = 2, -- v1.0.1
+        schemaVersion = 2, -- v1.2.0
         normalSpeed = NS,
         carrySpeed = CS,
         laggerSpeed1 = LAGGER_SPEED,
@@ -7456,7 +7480,7 @@ function loadAllSettings()
 
     _isLoading = false
     if not loadOk then
-        warn("[ShoxHub v1.0.1] loadAllSettings partial failure: " .. tostring(loadErr))
+        warn("[ShoxHub v1.2.0] loadAllSettings partial failure: " .. tostring(loadErr))
         return false
     end
     return true
@@ -7467,6 +7491,7 @@ local contentPages = nil
 function forceResetUI()
     currentColorTheme = normalizeShoxTheme(currentColorTheme)
     selectedColor = COLOR_THEMES[currentColorTheme]
+    -- v1.2.0: Erzwingt UI-Sync beim Laden
     if normalBox then normalBox.Text = tostring(NS) end
     if carryBox then carryBox.Text = tostring(CS) end
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
@@ -7726,7 +7751,7 @@ function resetToFactoryDefaults()
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
-        -- v1.0.1 fix: gültiger Theme-Key
+        -- v1.2.0 fix: gültiger Theme-Key
         currentColorTheme = "Monochrome"
         selectedColor = COLOR_THEMES["Monochrome"]
         backgroundIndex = 1
@@ -10668,6 +10693,7 @@ end
 
 function updateUIFromLoaded()
     task.wait()
+    -- v1.2.0: Erzwingt UI-Sync beim Laden
     if normalBox then normalBox.Text = tostring(NS) end
     if carryBox then carryBox.Text = tostring(CS) end
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
@@ -11507,6 +11533,13 @@ end)
 local lastLaggerToggle = 0
 local LAGGER_COOLDOWN = 0.3
 
+-- v1.2.0: Global Fail-Safe, damit _isDraggingButton nie hängen bleibt.
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        task.delay(0.3, function() _isDraggingButton = false end)
+    end
+end)
+
 UIS.InputBegan:Connect(function(input, gpe)
     if _anyKeyListening then return end
     if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -11592,7 +11625,7 @@ end)
 
 
 -- ═══════════════════════════════════════════════════════════════
--- ShoxHub v1.0.1 — Global Destroy
+-- ShoxHub v1.2.0 — Global Destroy (Phase 3)
 -- ═══════════════════════════════════════════════════════════════
 _G.ShoxHubDestroy = function() ShoxHubState:Destroy() end
-print("[ShoxHub v1.0.1] Loaded. Version: " .. tostring(ShoxHubState.Version))
+print("[ShoxHub v1.2.0] Loaded. Phase 3 Active. Version: " .. tostring(ShoxHubState.Version))
