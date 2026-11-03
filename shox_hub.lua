@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.4.1"
+ShoxHubState.Version     = "v1.6.2"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -17,6 +17,7 @@ end
 function ShoxHubState:Destroy()
     self.Running = false
     _G.BloodHoundsRunning = false
+    if type(stopAllBackgroundTasks) == "function" then pcall(stopAllBackgroundTasks) end
     for _, conn in ipairs(self.Connections) do pcall(function() conn:Disconnect() end) end
     self.Connections = {}
     for _, t in ipairs(self.Timers) do pcall(task.cancel, t) end
@@ -32,7 +33,7 @@ function ShoxHubState:Destroy()
             if gui then pcall(function() gui:Destroy() end) end
         end
     end
-    print("[ShoxHub v1.4.1] Destroyed — Instanz freigegeben.")
+    print("[ShoxHub v1.6.0] Destroyed — Instanz freigegeben.")
 end
 
 _G.BloodHoundsRunning = true
@@ -49,7 +50,7 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
--- v1.4.1: Unified font matches CTD intro brand (GothamBlack).
+-- v1.6.0: Unified font matches CTD intro brand (GothamBlack).
 local SHOX_UI_FONT = Enum.Font.GothamBlack
 
 local ShoxIntro = {
@@ -160,7 +161,7 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    -- v1.4.1: Pure Black & White Intro exact match.
+    -- v1.6.0: Pure Black & White Intro exact match.
     local accent = Color3.fromRGB(255, 255, 255)
     local subColor = Color3.fromRGB(200, 200, 200)
     local introParent = shoxIntroParent()
@@ -389,14 +390,14 @@ local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- v1.4.1: Warn-Throttling gegen Log-Spam aus Loops.
+-- v1.6.0: Warn-Throttling gegen Log-Spam aus Loops.
 local _shoxWarnLast = {}
 local function shoxWarn(key, msg, interval)
     interval = interval or 5
     local now = os.clock()
     if _shoxWarnLast[key] and now - _shoxWarnLast[key] < interval then return end
     _shoxWarnLast[key] = now
-    warn("[ShoxHub v1.4.1][" .. tostring(key) .. "] " .. tostring(msg))
+    warn("[ShoxHub v1.6.0][" .. tostring(key) .. "] " .. tostring(msg))
 end
 
 local _tick          = tick
@@ -439,6 +440,7 @@ local function waitForCharReady(char, timeout)
 end
 
 NS = 60
+_globalMovementLock = 0 -- v1.6.2: global, damit CarrySystem/_applyVelocitySpeed die Variable vor Zeile ~3000 sehen
 CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
@@ -664,8 +666,15 @@ function CarrySystem:updateMovement(dt)
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hrp or not hum then return end
 
-    -- v1.4.1 SH-07 Fix: TP Down blockiert andere Systeme kurz
-    if tick() < _tpDownCooldown then
+    -- v1.6.0 SH-06/07 Fix: Global Movement Lock
+    if tick() < _globalMovementLock then
+        local lv = self._lvBoost
+        if lv then pcall(function() lv.PlaneVelocity = Vector2.zero; lv.Enabled = false end) end
+        return
+    end
+
+    -- v1.6.0 SH-06/07 Fix: Global Movement Lock
+    if tick() < _globalMovementLock then
         local lv = self._lvBoost
         if lv then pcall(function() lv.PlaneVelocity = Vector2.zero; lv.Enabled = false end) end
         return
@@ -965,7 +974,7 @@ function updateAllUIThemeColors(color)
         local titleFrame = main:FindFirstChild("TitleFrame")
         if titleFrame then
             for _, child in ipairs(titleFrame:GetDescendants()) do
-                if child:IsA("UIStroke") and (child.Color == color or child.Color == color) then
+                if child:IsA("UIStroke") and child.Color == color then
                     child.Color = color
                 end
             end
@@ -2327,19 +2336,7 @@ do
         pg.DescendantAdded:Connect(function(obj)
             task.defer(_G.AmbitiousHookNormalInfMobileJumpButton, obj)
         end)
-        task.spawn(function()
-            while pg and pg.Parent do
-                for hooked in pairs(_G.AmbitiousNormalInfJump.hooked) do
-                    if not hooked or not hooked.Parent then
-                        _G.AmbitiousNormalInfJump.hooked[hooked] = nil
-                    end
-                end
-                for _, obj in ipairs(pg:GetDescendants()) do
-                    _G.AmbitiousHookNormalInfMobileJumpButton(obj)
-                end
-                task.wait(5)
-            end
-        end)
+        -- v1.6.0 SH-24 Fix: Redundante 5-Sekunden-Polling-Schleife entfernt.
     end
 end
 
@@ -2417,11 +2414,9 @@ local function claimOwnership(root)
 end
 
 function getActiveMoveSpeed()
-    -- v1.4.1 SH-01 Fix: Eine einzige Quelle der Wahrheit (CarrySystem)
     if CarrySystem then
         return CarrySystem:getActiveSpeed()
     end
-    -- Fallback
     if laggerCarryToggled then return LAGGER_CARRY_SPEED
     elseif laggerToggled then return LAGGER_SPEED
     elseif speedMode then return CS
@@ -2441,6 +2436,7 @@ end
 
 local function _applyVelocitySpeed(dir, speed, hrp)
     if not hrp or not hrp.Parent then return end
+    if tick() < _globalMovementLock then return end
     if autoBatV2Enabled or batDesyncTpEnabled or autoBatEnabled then return end
     if dir and dir.Magnitude > 0.05 then
         pcall(function()
@@ -2800,7 +2796,7 @@ local function executeSteal(prompt, podName)
             if progressFill then progressFill.Size = UDim2.new(stopProgress, 0, 1, 0) end
             if progressPct then progressPct.Text = _floor(stopProgress * 100) .. "%" end
             local phase2Timeout = math.max(2.99 - stopTime - math.max(duration - stopTime, 0), 0.05)
-            if phase2Timeout > 5 then phase2Timeout = 5 end -- Fail-safe gegen Endlosschleife
+            if phase2Timeout > 5 then phase2Timeout = 5 end
             local phase2Start = _tick()
             while isStealing and Steal.AutoStealEnabled do
                 if _tick() - phase2Start >= phase2Timeout then
@@ -2853,7 +2849,6 @@ local function executeSteal(prompt, podName)
                         promptFired = true
                         pcall(function()
                             for _, f in ipairs(data.trigger) do task.spawn(f) end
-                            -- v1.4.1 P0 Fix: Remote entfernt, um Doppel-Steal (Despawn) zu verhindern
                             if prompt then prompt:Fire() end
                         end)
                         break
@@ -2877,8 +2872,6 @@ local function executeSteal(prompt, podName)
                     promptFired = true
                     pcall(function()
                         for _, f in ipairs(data.trigger) do task.spawn(f) end
-                        local remote = ReplicatedStorage:FindFirstChild("StealAnimal")
-                        if remote and podName then remote:FireServer(podName) end
                         if prompt then prompt:Fire() end
                     end)
                     break
@@ -3072,34 +3065,50 @@ end
 
 
 
-local _tpDownCooldown = 0
+-- v1.6.2: gemeinsame Boden-Erkennung (nur solide Teile, keine Spieler, kein Wasser)
+function ShoxGetGroundHit(char, root)
+    local ignore = {char}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character and p.Character ~= char then table.insert(ignore, p.Character) end
+    end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = ignore
+    params.IgnoreWater = true
+    pcall(function() params.RespectCanCollide = true end)
+    return workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), params)
+end
+
+function ShoxGetStandOffset(humanoid, root)
+    local hip = math.max(0, humanoid.HipHeight)
+    if humanoid.RigType == Enum.HumanoidRigType.R6 then
+        return 3 + hip + 0.05
+    end
+    return hip + (root.Size.Y * 0.5) + 0.05
+end
+
 local function doTpDown()
-    pcall(function()
+    local ok, err = pcall(function()
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if not root or not humanoid or humanoid.Health <= 0 then return end
 
-        -- Resolve the floor at the current X/Z instead of assuming every map
-        -- has a walkable surface at world Y = -7. Exclude our own character.
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = {char}
-        params.IgnoreWater = true
-        local hit = workspace:Raycast(root.Position + _V3new(0, 2, 0), _V3new(0, -5000, 0), params)
+        local hit = ShoxGetGroundHit(char, root)
         if not hit then return end
 
+        local targetY = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
+        if root.Position.Y - targetY < 3 then return end -- schon am Boden
+
         local yaw = select(2, root.CFrame:ToEulerAnglesYXZ())
-        local floorOffset = math.max(0, humanoid.HipHeight) + (root.Size.Y * 0.5) + 0.05
-        root.CFrame = _CFnew(root.Position.X, hit.Position.Y + floorOffset, root.Position.Z)
+        root.CFrame = _CFnew(root.Position.X, targetY, root.Position.Z)
             * CFrame.Angles(0, yaw, 0)
         root.AssemblyLinearVelocity = _V3zero
         root.AssemblyAngularVelocity = _V3zero
-        
-        -- v1.4.1 SH-07 Fix: Cooldown setzen, damit Physik nicht flippt
-        _tpDownCooldown = tick() + 0.25
+        _globalMovementLock = tick() + 0.3 -- SH-06/07 Lock
     end)
+    if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
 
 -- ═══════════════════════════════════════════════════════════════
@@ -3135,7 +3144,11 @@ do
         if now - mirrorTPLastTeleport < 0.08 then return end
         mirrorTPLastTeleport = now
         local _, yaw = root.CFrame:ToEulerAnglesYXZ()
-        root.CFrame = _CFnew(root.Position.X, MIRROR_TP_DOWN_Y, root.Position.Z)
+        local hit = ShoxGetGroundHit(character, root)
+        if not hit then return end
+        local ty = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
+        if root.Position.Y - ty < 3 then return end
+        root.CFrame = _CFnew(root.Position.X, ty, root.Position.Z)
                    * CFrame.Angles(0, yaw, 0)
         root.Velocity = _V3zero
         pcall(function() root.AssemblyLinearVelocity = _V3zero end)
@@ -3250,7 +3263,6 @@ function _G.AmbitiousSafeModeHoldingBrainrot()
         if child:IsA("Model") and child:GetAttribute("IsCarried") == true then
             return true
         end
-        -- v1.4.1 P1 Fix: Zuverlässigere Erkennung
         local name = child.Name:lower()
         if name:find("brainrot", 1, true) or name:find("animal", 1, true) then
             if child:FindFirstChildWhichIsA("BasePart") then
@@ -4268,10 +4280,15 @@ end
 
 function refreshSpeedModeLabel()
     if modeValLbl then
-        if laggerCarryToggled then modeValLbl.Text = "Lagger Carry"
-        elseif laggerToggled then modeValLbl.Text = "Lagger"
-        elseif speedMode then modeValLbl.Text = "Carry"
-        else modeValLbl.Text = "Normal" end
+        if CarrySystem then
+            local status = CarrySystem:getStatus()
+            modeValLbl.Text = status
+        else
+            if laggerCarryToggled then modeValLbl.Text = "Lagger Carry"
+            elseif laggerToggled then modeValLbl.Text = "Lagger"
+            elseif speedMode then modeValLbl.Text = "Carry"
+            else modeValLbl.Text = "Normal" end
+        end
     end
     if laggerCarryToggled then _G.AceCurrentSpeedMode = "Lagger Carry"
     elseif laggerToggled then _G.AceCurrentSpeedMode = "Lagger"
@@ -4296,7 +4313,6 @@ end
 
 function resetMovementState()
     refreshSpeedModeLabel()
-    -- v1.4.1 SH-03 Fix: Physikalischen Impuls sofort killen bei Modus-Wechsel
     local char = LP.Character
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if root then
@@ -4354,6 +4370,7 @@ end
 
 local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     if not root or not root.Parent then return end
+    if tick() < _globalMovementLock then return end
     local flat = _V3new(direction.X, 0, direction.Z)
     if flat.Magnitude < 0.001 then return end
 
@@ -4367,7 +4384,6 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
     local alpha = 1 - math.exp(-safeDt * 24)
 
-    -- v1.4.1: Geschwindigkeit exakt auf Target normalisieren (kein 53-Speed Verlust mehr)
     local targetVel = _V3new(desiredX, 0, desiredZ)
     local smoothed = _V3new(current.X, 0, current.Z):Lerp(targetVel, alpha)
     if smoothed.Magnitude > 0.001 then
@@ -4379,6 +4395,7 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
 end
 
 function stopAutoLeft()
+    autoLeftEnabled = false
     if alConn then alConn:Disconnect(); alConn = nil end
     alPhase = 1
     local char = LP.Character
@@ -4477,6 +4494,7 @@ function startAutoLeft()
 end
 
 function stopAutoRight()
+    autoRightEnabled = false
     if arConn then arConn:Disconnect(); arConn = nil end
     arPhase = 1
     local char = LP.Character
@@ -4622,7 +4640,6 @@ function trySwing()
             return
         end
         bat:Activate()
-        -- v1.4.1: Von 0.14 auf 0.1 reduziert für bessere Duell-Chancen
         _nextBatSwingAt = now + 0.1
     end)
     if not ok then _nextBatSwingAt = now + 0.2 end
@@ -4694,7 +4711,6 @@ function startAimbotAdapt()
         if velocityDelta.Magnitude > maxDelta then
             nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
         end
-        -- v1.4.1: Aimbot Geschwindigkeit normalisieren
         local flatNext = _V3new(nextVelocity.X, 0, nextVelocity.Z)
         local flatDesired = _V3new(desiredVel.X, 0, desiredVel.Z)
         if flatNext.Magnitude > 0.1 and flatDesired.Magnitude > 0.1 then
@@ -5097,7 +5113,6 @@ function BB.Start()
             if velocityDelta.Magnitude > maxDelta then
                 nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
             end
-            -- v1.4.1: Bat Bypass Geschwindigkeit normalisieren
             local flatNext = Vector3.new(nextVelocity.X, 0, nextVelocity.Z)
             local flatDesired = Vector3.new(desiredVelocity.X, 0, desiredVelocity.Z)
             if flatNext.Magnitude > 0.1 and flatDesired.Magnitude > 0.1 then
@@ -5409,7 +5424,6 @@ local function tpBatFollowTarget(root, targetRoot)
     if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
         return false
     end
-    -- v1.4.1: Offset hinter den Gegner setzen, damit Roblox Physik/Server die Hits registriert
     local offsetCF = CFrame.new(0, 1.2, -2.5)
     root.CFrame = targetRoot.CFrame * offsetCF
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
@@ -5418,6 +5432,7 @@ end
 
 local function tpBatUpdate()
     if not batDesyncTpEnabled then return end
+    if tick() < _globalMovementLock then return end
     local character = LP.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -6561,7 +6576,7 @@ function setupMovementAndIndicators(char)
     local ccAcc = 0
     steppedConn = RunService.Heartbeat:Connect(function(dt)
         ccAcc = ccAcc + dt
-        if ccAcc < 0.05 then return end
+        if ccAcc < 0.2 then return end -- SH-23 Fix
         ccAcc = 0
         local plist = _GetPlayersCached()
         for i = 1, #plist do
@@ -6612,19 +6627,11 @@ function setupMovementAndIndicators(char)
         end
 
         if speedLabel then
-            -- v1.4.1 SH-02 Fix: Zeigt die tatsächliche Velocity
+            -- v1.6.0 SH-02 Fix: Zeigt die echte physikalische Velocity
             local v = hrp.AssemblyLinearVelocity
             local s = _sqrt(v.X*v.X + v.Z*v.Z)
             if s < 0.05 then s = 0 end
-            
-            -- Wenn CarrySystem rennt, nutze dessen exakten Zielwert für die Anzeige,
-            -- wenn wir uns bewegen. Sonst die echte Physik-Velocity.
-            local displaySpeed = s
-            if useCarrySystem and CarrySystem:isRunning() and hum.MoveDirection.Magnitude > 0.1 then
-                displaySpeed = CarrySystem:getActiveSpeed()
-            end
-            
-            speedLabel.Text = string.format("%.1f speed", displaySpeed)
+            speedLabel.Text = string.format("%.1f speed", s)
         end
     end)
     setupSpeedIndicator(char)
@@ -7018,7 +7025,7 @@ ShoxHubAutoTPDownHeight = tonumber(ShoxHubAutoTPDownHeight) or 20
 ShoxHubShowE01Warning = ShoxHubShowE01Warning == true
 function buildConfigTable()
     local config = {
-        schemaVersion = 2, -- v1.4.1
+        schemaVersion = 2, -- v1.6.0
         normalSpeed = NS,
         carrySpeed = CS,
         laggerSpeed1 = LAGGER_SPEED,
@@ -7463,7 +7470,7 @@ function loadAllSettings()
     CarrySystem.normalSpeed = readNumber(data.carrySysNormal, NS, 1, 500)
     local savedBaseCarry = tonumber(data.carrySpeed)
     local savedSystemCarry = tonumber(data.carrySysCarry)
-    local loadedCarrySpeed = math.max(savedBaseCarry or 0, savedSystemCarry or 0)
+    local loadedCarrySpeed = savedBaseCarry or savedSystemCarry or CS
     if loadedCarrySpeed <= 0 then loadedCarrySpeed = CS end
     -- v15 shipped with 29 as the default; migrate that legacy default to 30.
     if loadedCarrySpeed == 29 then loadedCarrySpeed = 30 end
@@ -7512,7 +7519,7 @@ function loadAllSettings()
 
     _isLoading = false
     if not loadOk then
-        warn("[ShoxHub v1.4.1] loadAllSettings partial failure: " .. tostring(loadErr))
+        warn("[ShoxHub v1.6.0] loadAllSettings partial failure: " .. tostring(loadErr))
         return false
     end
     return true
@@ -7523,7 +7530,6 @@ local contentPages = nil
 function forceResetUI()
     currentColorTheme = normalizeShoxTheme(currentColorTheme)
     selectedColor = COLOR_THEMES[currentColorTheme]
-    -- v1.4.1: Erzwingt UI-Sync beim Laden
     if normalBox then normalBox.Text = tostring(NS) end
     if carryBox then carryBox.Text = tostring(CS) end
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
@@ -7783,7 +7789,6 @@ function resetToFactoryDefaults()
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
-        -- v1.4.1 fix: gültiger Theme-Key
         currentColorTheme = "Monochrome"
         selectedColor = COLOR_THEMES["Monochrome"]
         backgroundIndex = 1
@@ -7809,6 +7814,9 @@ function resetToFactoryDefaults()
         infJumpEnabled      = false
         infJumpMode         = "HOLD"
         mirrorTPDownEnabled = false
+        ShoxHubAutoTPDown = false
+        ShoxHubAutoTPDownHeight = 20
+        ShoxHubShowE01Warning = false
         antiKickEnabled     = false
         _G.AmbitiousHideMobileButtons = false
         _G.AmbitiousMobileHideList = {}
@@ -7821,9 +7829,9 @@ function resetToFactoryDefaults()
         updateProgressBarVisibility()
         refreshSpeedModeLabel()
         _lastSavedJSON = nil
-        saveAllSettings()
     end)
     _isResetting = false
+    if ok then saveAllSettings() end
     if not ok then warn("[resetToFactoryDefaults]", err) end
     return ok
 end
@@ -10120,9 +10128,9 @@ function buildGui()
             if dt > 0 then
                 table.insert(fpsSamples, math.clamp(1 / dt, 1, 240))
                 if #fpsSamples > 30 then table.remove(fpsSamples, 1) end
-                local sum = 0
-                for _, v in ipairs(fpsSamples) do sum = sum + v end
-                fpsAvg = sum / #fpsSamples
+                local removed = table.remove(fpsSamples, 1)
+                    fpsSum = fpsSum - (removed or 0)
+                    fpsAvg = fpsSum / #fpsSamples
             end
         end)
         while fpsNeon and fpsNeon.Parent and pbFrame and pbFrame.Parent do
@@ -10725,7 +10733,6 @@ end
 
 function updateUIFromLoaded()
     task.wait()
-    -- v1.4.1: Erzwingt UI-Sync beim Laden
     if normalBox then normalBox.Text = tostring(NS) end
     if carryBox then carryBox.Text = tostring(CS) end
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
@@ -10986,16 +10993,13 @@ ShoxHubE01Gui = nil
 
 RunService.Heartbeat:Connect(function()
     if not ShoxHubAutoTPDown then return end
+    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then return end
     local ShoxHubCharacter = LP.Character
     local ShoxHubRoot = ShoxHubCharacter and ShoxHubCharacter:FindFirstChild("HumanoidRootPart")
     local ShoxHubHumanoid = ShoxHubCharacter and ShoxHubCharacter:FindFirstChildOfClass("Humanoid")
     if ShoxHubRoot and ShoxHubHumanoid and ShoxHubHumanoid.FloorMaterial == Enum.Material.Air and os.clock() - ShoxHubAutoTPLastAt >= 0.35 then
-        -- v1.4.1 P0 Fix: Prüft die Distanz zum Boden, nicht die absolute Kartenhöhe
-        local params = RaycastParams.new()
-        params.FilterDescendantsInstances = {ShoxHubCharacter}
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        local hit = workspace:Raycast(ShoxHubRoot.Position, Vector3.new(0, -500, 0), params)
-        local groundY = hit and hit.Position.Y or -7
+        local hit = ShoxGetGroundHit(ShoxHubCharacter, ShoxHubRoot)
+        local groundY = hit and hit.Position.Y or ShoxHubRoot.Position.Y -- SH-13 Fix
         local heightAboveGround = ShoxHubRoot.Position.Y - groundY
         if heightAboveGround >= ShoxHubAutoTPDownHeight then
             ShoxHubAutoTPLastAt = os.clock()
@@ -11574,7 +11578,6 @@ end)
 local lastLaggerToggle = 0
 local LAGGER_COOLDOWN = 0.3
 
--- v1.4.1: Global Fail-Safe, damit _isDraggingButton nie hängen bleibt.
 UIS.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         task.delay(0.3, function() _isDraggingButton = false end)
@@ -11666,7 +11669,7 @@ end)
 
 
 -- ═══════════════════════════════════════════════════════════════
--- ShoxHub v1.4.1 — Global Destroy (Ultimate)
+-- ShoxHub v1.6.0 — Global Destroy (Architecture Master)
 -- ═══════════════════════════════════════════════════════════════
 _G.ShoxHubDestroy = function() ShoxHubState:Destroy() end
-print("[ShoxHub v1.4.1] Loaded. Ultimate Fix Active. Version: " .. tostring(ShoxHubState.Version))
+print("[ShoxHub v1.6.0] Loaded. Absolute Master Architecture Active. Version: " .. tostring(ShoxHubState.Version))
