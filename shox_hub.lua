@@ -5,6 +5,44 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
+ShoxHubState.Version     = "v1.0"
+ShoxHubState.Connections = ShoxHubState.Connections or {}
+ShoxHubState.Timers      = ShoxHubState.Timers      or {}
+
+function ShoxHubState:Track(conn)
+    if conn then table.insert(self.Connections, conn) end
+    return conn
+end
+
+function ShoxHubState:Destroy()
+    self.Running = false
+    _G.BloodHoundsRunning = false
+    for _, conn in ipairs(self.Connections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    self.Connections = {}
+    for _, t in ipairs(self.Timers) do
+        pcall(task.cancel, t)
+    end
+    self.Timers = {}
+    local names = {
+        "FictionHub", "FictionHubMobilePanel", "ShoxHubIntro",
+        "ShoxCodeSniperIntro", "TpBatButton", "BatV2Button",
+        "InstaResetButton", "ShoxHubE01Warning",
+    }
+    local parents = { game:GetService("CoreGui") }
+    local lp = game:GetService("Players").LocalPlayer
+    local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+    if pg then table.insert(parents, pg) end
+    for _, name in ipairs(names) do
+        for _, parent in ipairs(parents) do
+            local gui = parent:FindFirstChild(name)
+            if gui then pcall(function() gui:Destroy() end) end
+        end
+    end
+    print("[ShoxHub v1.0] Destroyed — Instanz freigegeben.")
+end
+
 _G.BloodHoundsRunning = true
 
 repeat task.wait() until game:IsLoaded()
@@ -19,8 +57,8 @@ local ShoxHubSoundService = game:GetService("SoundService")
 local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
--- Use the requested SourceSansBold font consistently throughout the UI.
-local SHOX_UI_FONT = Enum.Font.SourceSansBold
+-- v1.0: Unified font matches CTD intro brand (GothamBlack).
+local SHOX_UI_FONT = Enum.Font.GothamBlack
 
 local ShoxIntro = {
     Running = true,
@@ -130,9 +168,27 @@ local function shoxIntroRing(stage, accent, thickness)
 end
 
 local function shoxIntroPlay()
-    -- Intro intentionally stays grayscale; saved UI themes do not recolor it.
-    local accent = Color3.fromRGB(225, 225, 225)
-    local subColor = Color3.fromRGB(165, 165, 165)
+    -- v1.0: CTD Intro 1:1 — theme-aware accent.
+    local introThemes = {
+        Black   = Color3.fromRGB(175, 175, 190),
+        White   = Color3.fromRGB(55, 65, 80),
+        Blue    = Color3.fromRGB(35, 125, 255),
+        Lava    = Color3.fromRGB(255, 83, 35),
+        Neutral = Color3.fromRGB(125, 130, 140),
+    }
+    local savedIntroTheme = "Neutral"
+    pcall(function()
+        if isfile and readfile and isfile("FictionHub.json") then
+            local cfg = ShoxHubHttpService:JSONDecode(readfile("FictionHub.json"))
+            if type(cfg) == "table" and introThemes[cfg.themeColor] then
+                savedIntroTheme = cfg.themeColor
+            end
+        end
+    end)
+    local accent = introThemes[savedIntroTheme]
+    local subColor = savedIntroTheme == "White"
+        and Color3.fromRGB(75, 80, 95)
+        or  Color3.fromRGB(190, 200, 215)
     local introParent = shoxIntroParent()
     pcall(function()
         local old = introParent:FindFirstChild("ShoxHubIntro") or introParent:FindFirstChild("ShoxCodeSniperIntro")
@@ -174,7 +230,7 @@ local function shoxIntroPlay()
         local letterScale = shoxIntroMake("UIScale", {Scale = 1}, wrap)
         local label = shoxIntroMake("TextLabel", {
             Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
-            Text = character, Font = SHOX_UI_FONT, TextSize = 76,
+            Text = character, Font = Enum.Font.GothamBlack, TextSize = 76,
             TextColor3 = accent, TextTransparency = 1, Active = false,
         }, wrap)
         letters[i] = {w = wrap, us = letterScale, lb = label, x = x, hit = -10, amp = 0, rev = math.huge}
@@ -187,7 +243,7 @@ local function shoxIntroPlay()
     local subtitle = shoxIntroMake("TextLabel", {
         AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 80),
         Size = UDim2.fromOffset(376, 22), BackgroundTransparency = 1,
-        Text = "discord.gg/EA7xS26mA9", Font = SHOX_UI_FONT,
+        Text = "discord.gg/EA7xS26mA9", Font = Enum.Font.GothamBold,
         TextSize = 17, TextColor3 = subColor, TextTransparency = 1,
     }, stage)
     local flash = shoxIntroMake("Frame", {
@@ -198,7 +254,7 @@ local function shoxIntroPlay()
         AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 14),
         Size = UDim2.fromOffset(78, 32), BackgroundColor3 = Color3.fromRGB(24, 48, 80),
         Text = "Skip", TextColor3 = Color3.fromRGB(225, 242, 255),
-        Font = SHOX_UI_FONT, TextSize = 14, AutoButtonColor = false,
+        Font = Enum.Font.GothamBold, TextSize = 14, AutoButtonColor = false,
         BorderSizePixel = 0, ZIndex = 10, Active = true,
     }, gui)
     shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
@@ -358,6 +414,16 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local camera = workspace.CurrentCamera
+
+-- v1.0: Warn-Throttling gegen Log-Spam aus Loops.
+local _shoxWarnLast = {}
+local function shoxWarn(key, msg, interval)
+    interval = interval or 5
+    local now = os.clock()
+    if _shoxWarnLast[key] and now - _shoxWarnLast[key] < interval then return end
+    _shoxWarnLast[key] = now
+    warn("[ShoxHub v1.0][" .. tostring(key) .. "] " .. tostring(msg))
+end
 
 local _tick          = tick
 local _clamp         = math.clamp
@@ -6914,6 +6980,7 @@ ShoxHubAutoTPDownHeight = tonumber(ShoxHubAutoTPDownHeight) or 20
 ShoxHubShowE01Warning = ShoxHubShowE01Warning == true
 function buildConfigTable()
     local config = {
+        schemaVersion = 2, -- v1.0
         normalSpeed = NS,
         carrySpeed = CS,
         laggerSpeed1 = LAGGER_SPEED,
@@ -7122,6 +7189,13 @@ function loadAllSettings()
     local success, data = pcall(function() return HS:JSONDecode(readfile(CONFIG_FILE)) end)
     if not success or type(data) ~= "table" then return false end
     _isLoading = true
+
+    local loadOk, loadErr = pcall(function()
+        local schemaVersion = tonumber(data.schemaVersion) or 1
+        if schemaVersion < 2 and data.themeColor == nil then
+            data.themeColor = "Monochrome"
+        end
+
     -- JSON values are user-editable; never let strings/NaN-like values enter
     -- movement calculations. Keep the last known-good defaults on invalid data.
     local function readNumber(value, fallback, minimum, maximum)
@@ -7396,7 +7470,13 @@ function loadAllSettings()
         return HS:JSONEncode(ShoxHubToJSON(buildConfigTable()))
     end)
     _lastSavedJSON = cacheOk and cacheJson or nil
+    end) -- pcall(loadAllSettings)
+
     _isLoading = false
+    if not loadOk then
+        warn("[ShoxHub v1.0] loadAllSettings partial failure: " .. tostring(loadErr))
+        return false
+    end
     return true
 end
 
@@ -7664,8 +7744,9 @@ function resetToFactoryDefaults()
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
-        currentColorTheme = "Neutral"
-        selectedColor = COLOR_THEMES["Neutral"]
+        -- v1.0 fix: gültiger Theme-Key
+        currentColorTheme = "Monochrome"
+        selectedColor = COLOR_THEMES["Monochrome"]
         backgroundIndex = 1
         backgroundImageTransparency = 0.35
         applyBackground(1)
@@ -11526,3 +11607,10 @@ UIS.InputBegan:Connect(function(input, gpe)
     end
 
 end)
+
+
+-- ═══════════════════════════════════════════════════════════════
+-- ShoxHub v1.0 — Global Destroy
+-- ═══════════════════════════════════════════════════════════════
+_G.ShoxHubDestroy = function() ShoxHubState:Destroy() end
+print("[ShoxHub v1.0] Loaded. Version: " .. tostring(ShoxHubState.Version))
