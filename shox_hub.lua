@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.6.2"
+ShoxHubState.Version     = "v1.7.0"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -445,7 +445,7 @@ CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
-BAT_AIMBOT_SPEED = 90
+BAT_AIMBOT_SPEED = 50
 BYPASS_AIMBOT_SPEED = 60
 MOBILE_PANEL_WIDTH = 128
 MOBILE_PANEL_HEIGHT = 294
@@ -1445,6 +1445,20 @@ _blRestoreTimer = nil
 savedProgressBarPos = nil
 savedButtonPositions = {}
 savedMobilePanelPos = nil
+function _shoxLayoutResetOnce()
+    if _G._shoxLayoutChecked then return end
+    _G._shoxLayoutChecked = true
+    pcall(function()
+        local flag = "ShoxHub_layout_v170.flag"
+        if isfile and writefile and not isfile(flag) then
+            savedButtonPositions = {}
+            savedMobilePanelPos = nil
+            savedProgressBarPos = nil
+            writefile(flag, "1")
+            if saveAllSettings then pcall(saveAllSettings) end
+        end
+    end)
+end
 batV2FloatingPos = nil
 instaResetFloatingPos = nil
 instaResetFloatingButton = nil
@@ -3104,9 +3118,10 @@ local function doTpDown()
         local yaw = select(2, root.CFrame:ToEulerAnglesYXZ())
         root.CFrame = _CFnew(root.Position.X, targetY, root.Position.Z)
             * CFrame.Angles(0, yaw, 0)
-        root.AssemblyLinearVelocity = _V3zero
+        local lv = root.AssemblyLinearVelocity
+        root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z) -- v1.7.0: Tempo behalten, nur Fall stoppen
         root.AssemblyAngularVelocity = _V3zero
-        _globalMovementLock = tick() + 0.3 -- SH-06/07 Lock
+        _globalMovementLock = tick() + 0.05 -- v1.7.0: kurz statt 0.3 s (verlangsamte dich)
     end)
     if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
@@ -3315,7 +3330,10 @@ if _G.AmbitiousSafeModeMonitorConnection then
     pcall(function() _G.AmbitiousSafeModeMonitorConnection:Disconnect() end)
     _G.AmbitiousSafeModeMonitorConnection = nil
 end
-_G.AmbitiousSafeModeMonitorConnection = RunService.Heartbeat:Connect(function()
+_G.AmbitiousSafeModeMonitorConnection = RunService.Heartbeat:Connect(function(dt)
+    _G._shoxSMAcc = (_G._shoxSMAcc or 0) + (dt or 0.016)
+    if _G._shoxSMAcc < 0.2 then return end -- v1.7.0: statt jedes Frame nur 5x pro Sekunde
+    _G._shoxSMAcc = 0
     if antiKickEnabled
        and _G.AmbitiousSafeModeIsLocked
        and _G.AmbitiousSafeModeIsLocked() then
@@ -3833,6 +3851,13 @@ local function updateESP()
     if now - _espLastRun < 0.05 then return end
     _espLastRun = now
     if not espEnabled then clearESP(); return end
+    -- v1.7.0: Drawing-Linien liegen immer ueber jedem GUI -> waehrend des Intros komplett verstecken
+    if ShoxIntro and ShoxIntro.Running then
+        for _, lines in pairs(espTracerCache) do
+            for _, ln in ipairs(lines) do pcall(function() ln.Visible = false end) end
+        end
+        return
+    end
     local myChar = LP.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
@@ -4704,10 +4729,10 @@ function startAimbotAdapt()
         local desiredVel = _V3new(flatDir.X * BAT_AIMBOT_SPEED, yVel, flatDir.Z * BAT_AIMBOT_SPEED)
         local currentVelocity = root.AssemblyLinearVelocity
         local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
-        local alpha = 1 - math.exp(-safeDt * 22)
+        local alpha = 1 - math.exp(-safeDt * 30)
         local nextVelocity = currentVelocity:Lerp(desiredVel, alpha)
         local velocityDelta = nextVelocity - currentVelocity
-        local maxDelta = 420 * safeDt
+        local maxDelta = 600 * safeDt
         if velocityDelta.Magnitude > maxDelta then
             nextVelocity = currentVelocity + velocityDelta.Unit * maxDelta
         end
@@ -4732,7 +4757,7 @@ function startAimbotAdapt()
             root.AssemblyAngularVelocity = root.CFrame:VectorToWorldSpace(_V3new(rx * 42, ry * 42, rz * 42))
         end
         local distToTarget = (root.Position - target.Position).Magnitude
-        if distToTarget <= 8 then trySwing() end
+        if distToTarget <= 12 then trySwing() end
     end)
 end
 
@@ -5381,51 +5406,58 @@ end
 -- ══════════════════════════════════════════════════════
 -- TARGETING
 -- ══════════════════════════════════════════════════════
+_tpBatToolCache = setmetatable({}, {__mode = "k"})
+
+-- v1.7.0: erkennt Bat UND alle Slap-Varianten (vorher nur "bat" -> Gegner mit Slap wurden nie anvisiert)
 local function tpBatPlayerHasBat(player)
     if not player or player == LP then return false end
+    local now = _tick()
+    local cached = _tpBatToolCache[player]
+    if cached and now - cached.t < 0.5 then return cached.v end
 
     local function hasBat(container)
         if not container then return false end
         for _, item in ipairs(container:GetChildren()) do
-            local toolName = item:IsA("Tool") and item.Name:lower() or ""
-            local hasBaseballBatName = toolName == "bat"
-                or toolName:find("baseball bat", 1, true) ~= nil
-                or toolName:find("baseballbat", 1, true) ~= nil
-                or toolName:match("%f[%a]bat%f[%A]") ~= nil
-            if hasBaseballBatName then return true end
+            if item:IsA("Tool") and isBatTool(item) then return true end
         end
         return false
     end
 
-    local character = player.Character
-    local backpack = player:FindFirstChildOfClass("Backpack")
-        or player:FindFirstChild("Backpack")
-    return hasBat(character) or hasBat(backpack)
+    local backpack = player:FindFirstChildOfClass("Backpack") or player:FindFirstChild("Backpack")
+    local v = hasBat(player.Character) or hasBat(backpack)
+    _tpBatToolCache[player] = {t = now, v = v}
+    return v
 end
 
+-- Bevorzugt Spieler mit Waffe, sonst naechster lebender Spieler (Fallback)
 local function tpBatClosestPlayer(root)
-    local closest, distance = nil, math.huge
+    local bestBat, distBat = nil, math.huge
+    local bestAny, distAny = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
         local character = player ~= LP and player.Character
         local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if targetRoot and humanoid and humanoid.Health > 0
-            and tpBatPlayerHasBat(player) then
-            local candidateDistance = (root.Position - targetRoot.Position).Magnitude
-            if candidateDistance < distance then
-                closest, distance = player, candidateDistance
-            end
+        if targetRoot and humanoid and humanoid.Health > 0 then
+            local d = (root.Position - targetRoot.Position).Magnitude
+            if d < distAny then bestAny, distAny = player, d end
+            if d < distBat and tpBatPlayerHasBat(player) then bestBat, distBat = player, d end
         end
     end
-    return closest, distance
+    if bestBat then return bestBat, distBat end
+    return bestAny, distAny
 end
 
+-- v1.7.0: landet vor dem Ziel UND schaut es an (vorher gleiche Blickrichtung wie das Ziel = Schlag ins Leere)
 local function tpBatFollowTarget(root, targetRoot)
     if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
         return false
     end
-    local offsetCF = CFrame.new(0, 1.2, -2.5)
-    root.CFrame = targetRoot.CFrame * offsetCF
+    local tPos = targetRoot.Position
+    local look = targetRoot.CFrame.LookVector
+    local flat = Vector3.new(look.X, 0, look.Z)
+    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
+    local pos = tPos + flat * 2.5 + Vector3.new(0, 1.2, 0)
+    root.CFrame = CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
     return true
 end
@@ -5982,95 +6014,121 @@ function executeDropWithToggle(setVisual)
     end)
 end
 
--- Anti-Lag: nur visuelle Effekte deaktivieren, niemals Spielobjekte verändern/löschen.
-local antiLagOriginalProperties = setmetatable({}, {__mode = "k"})
-local antiLagLightingConn = nil
-local antiLagScanGeneration = 0
+-- Anti-Lag (v1.7.0 schlank): nur lokale visuelle Effekte, nichts wird geloescht.
+local ShoxAL = {
+    mat = setmetatable({}, {__mode = "k"}),
+    refl = setmetatable({}, {__mode = "k"}),
+    en = setmetatable({}, {__mode = "k"}),
+    tr = setmetatable({}, {__mode = "k"}),
+    lightConn = nil, scanGen = 0, kindCache = {}, q = {}, qh = 1, qt = 0, worker = nil,
+}
+
+-- Pro ClassName nur 1x IsA pruefen (vorher ~15 IsA-Aufrufe pro neuem Objekt)
+function ShoxAL.kind(obj)
+    local cn = obj.ClassName
+    local k = ShoxAL.kindCache[cn]
+    if k == nil then
+        if obj:IsA("BasePart") then k = "part"
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then k = "image"
+        elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+            or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
+            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then k = "effect"
+        elseif obj:IsA("PostEffect") then k = "post"
+        else k = false end
+        ShoxAL.kindCache[cn] = k
+    end
+    return k
+end
 
 local function applyAntiLagDerender(obj)
     pcall(function()
-        if not obj or obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
-
-        local isPart = obj:IsA("BasePart")
-        local isSurfaceImage = obj:IsA("Decal") or obj:IsA("Texture")
-        local isEffect =
-            obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
-            or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
-            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight")
-            or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect")
-            or obj:IsA("ColorCorrectionEffect") or obj:IsA("BloomEffect")
-            or obj:IsA("DepthOfFieldEffect") or obj:IsA("BrightnessEffect")
-            or obj:IsA("DitheringEffect")
-
-        if not isPart and not isSurfaceImage and not isEffect then return end
-        if isEffect and obj:IsA("PostEffect") and obj.Parent == Lighting and skyTheme ~= "Off" then
-            return
-        end
-
-        -- Save each eligible object's original look once so Anti-Lag can be toggled off.
-        local props = antiLagOriginalProperties[obj]
-        if props == nil then
-            props = {}
-            antiLagOriginalProperties[obj] = props
-        end
-
-        -- Reduce map surface detail locally without deleting or moving instances.
-        if isPart then
-            if props.Material == nil then props.Material = obj.Material end
-            if props.Reflectance == nil then props.Reflectance = obj.Reflectance end
-            obj.Material = Enum.Material.SmoothPlastic
-            obj.Reflectance = 0
-        elseif isSurfaceImage then
-            if props.Transparency == nil then props.Transparency = obj.Transparency end
+        if not obj then return end
+        local kind = ShoxAL.kind(obj)
+        if not kind then return end
+        if obj:GetAttribute("_AmbitiousHubSky") ~= nil then return end
+        if kind == "part" then
+            if ShoxAL.mat[obj] == nil then
+                ShoxAL.mat[obj] = obj.Material
+                ShoxAL.refl[obj] = obj.Reflectance
+            end
+            if obj.Material ~= Enum.Material.SmoothPlastic then obj.Material = Enum.Material.SmoothPlastic end
+            if obj.Reflectance ~= 0 then obj.Reflectance = 0 end
+        elseif kind == "image" then
+            if ShoxAL.tr[obj] == nil then ShoxAL.tr[obj] = obj.Transparency end
             obj.Transparency = 1
+        elseif kind == "post" then
+            if obj.Parent == Lighting and skyTheme ~= "Off" then return end
+            if ShoxAL.en[obj] == nil then ShoxAL.en[obj] = obj.Enabled end
+            obj.Enabled = false
         else
-            if props.Enabled == nil then props.Enabled = obj.Enabled end
+            if ShoxAL.en[obj] == nil then ShoxAL.en[obj] = obj.Enabled end
             obj.Enabled = false
         end
     end)
 end
 
+-- Neue Objekte werden in eine Warteschlange gelegt und gedrosselt abgearbeitet,
+-- damit Spawns (Effekte, Projektile) keinen Frame-Spike mehr ausloesen.
+function ShoxAL.enqueue(obj)
+    ShoxAL.qt = ShoxAL.qt + 1
+    ShoxAL.q[ShoxAL.qt] = obj
+    if not ShoxAL.worker then
+        ShoxAL.worker = task.spawn(function()
+            while antiLagEnabled and ShoxAL.qh <= ShoxAL.qt do
+                local n = 0
+                while ShoxAL.qh <= ShoxAL.qt and n < 80 do
+                    local o = ShoxAL.q[ShoxAL.qh]
+                    ShoxAL.q[ShoxAL.qh] = nil
+                    ShoxAL.qh = ShoxAL.qh + 1
+                    if o and o.Parent then applyAntiLagDerender(o) end
+                    n = n + 1
+                end
+                task.wait()
+            end
+            ShoxAL.q, ShoxAL.qh, ShoxAL.qt = {}, 1, 0
+            ShoxAL.worker = nil
+        end)
+    end
+end
+
 function enableAntiLag()
     antiLagEnabled = true
-    removeAccessoriesEnabled = true -- Kompatibilität mit vorhandenen Toggle-/UI-Stellen; löscht nichts.
+    removeAccessoriesEnabled = true -- Kompatibilitaet mit vorhandenen Toggle-Stellen; loescht nichts.
 
     pcall(function()
         settings().Rendering.QualityLevel = 1
         settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
     end)
 
-    -- Subscribe first so new effects are covered while the initial scan yields.
     if antiLagDescConn then antiLagDescConn:Disconnect() end
     antiLagDescConn = workspace.DescendantAdded:Connect(function(obj)
-        if antiLagEnabled then applyAntiLagDerender(obj) end
+        if antiLagEnabled then ShoxAL.enqueue(obj) end
     end)
 
-    if antiLagLightingConn then antiLagLightingConn:Disconnect() end
-    antiLagLightingConn = Lighting.DescendantAdded:Connect(function(obj)
-        if antiLagEnabled then applyAntiLagDerender(obj) end
+    if ShoxAL.lightConn then ShoxAL.lightConn:Disconnect() end
+    ShoxAL.lightConn = Lighting.DescendantAdded:Connect(function(obj)
+        if antiLagEnabled then ShoxAL.enqueue(obj) end
     end)
 
-    -- A full GetDescendants pass can hitch badly on large maps. Spread work
-    -- over frames and invalidate an unfinished scan if Anti-Lag is switched off.
-    antiLagScanGeneration = antiLagScanGeneration + 1
-    local scanGeneration = antiLagScanGeneration
+    ShoxAL.scanGen = ShoxAL.scanGen + 1
+    local scanGeneration = ShoxAL.scanGen
     task.spawn(function()
         local roots = {workspace, Lighting}
         for _, root in ipairs(roots) do
-            if not antiLagEnabled or scanGeneration ~= antiLagScanGeneration then return end
-            -- Walk incrementally instead of allocating one huge GetDescendants array.
+            if not antiLagEnabled or scanGeneration ~= ShoxAL.scanGen then return end
             local pending = root:GetChildren()
             local cursor = 1
             while cursor <= #pending do
-                if not antiLagEnabled or scanGeneration ~= antiLagScanGeneration then return end
+                if not antiLagEnabled or scanGeneration ~= ShoxAL.scanGen then return end
                 local obj = pending[cursor]
+                pending[cursor] = false
                 cursor = cursor + 1
-                applyAntiLagDerender(obj)
-                local children = obj:GetChildren()
-                for _, child in ipairs(children) do
-                    pending[#pending + 1] = child
+                if obj then
+                    applyAntiLagDerender(obj)
+                    local children = obj:GetChildren()
+                    for i = 1, #children do pending[#pending + 1] = children[i] end
                 end
-                if cursor % 180 == 0 then task.wait() end
+                if cursor % 250 == 0 then task.wait() end
             end
         end
     end)
@@ -6078,29 +6136,30 @@ end
 
 function disableAntiLag()
     antiLagEnabled = false
-    antiLagScanGeneration = antiLagScanGeneration + 1
+    ShoxAL.scanGen = ShoxAL.scanGen + 1
     removeAccessoriesEnabled = false
 
-    if antiLagDescConn then
-        antiLagDescConn:Disconnect()
-        antiLagDescConn = nil
-    end
-    if antiLagLightingConn then
-        antiLagLightingConn:Disconnect()
-        antiLagLightingConn = nil
-    end
+    if antiLagDescConn then antiLagDescConn:Disconnect(); antiLagDescConn = nil end
+    if ShoxAL.lightConn then ShoxAL.lightConn:Disconnect(); ShoxAL.lightConn = nil end
+    ShoxAL.q, ShoxAL.qh, ShoxAL.qt = {}, 1, 0
 
-    -- Restore original visual properties for effects, map parts and textures.
-    for obj, props in pairs(antiLagOriginalProperties) do
+    for obj, mat in pairs(ShoxAL.mat) do
         if obj and obj.Parent then
             pcall(function()
-                if props.Enabled ~= nil then obj.Enabled = props.Enabled end
-                if props.Material ~= nil then obj.Material = props.Material end
-                if props.Reflectance ~= nil then obj.Reflectance = props.Reflectance end
-                if props.Transparency ~= nil then obj.Transparency = props.Transparency end
+                obj.Material = mat
+                obj.Reflectance = ShoxAL.refl[obj] or 0
             end)
         end
-        antiLagOriginalProperties[obj] = nil
+        ShoxAL.mat[obj] = nil
+        ShoxAL.refl[obj] = nil
+    end
+    for obj, v in pairs(ShoxAL.en) do
+        if obj and obj.Parent then pcall(function() obj.Enabled = v end) end
+        ShoxAL.en[obj] = nil
+    end
+    for obj, v in pairs(ShoxAL.tr) do
+        if obj and obj.Parent then pcall(function() obj.Transparency = v end) end
+        ShoxAL.tr[obj] = nil
     end
 end
 
@@ -6460,38 +6519,40 @@ function paintFloatingBtn(btnFrame, active)
     local bg = btnFrame:FindFirstChild("BtnGrad")
     local label = btnFrame:FindFirstChild("TextLabel")
     local stroke = btnFrame:FindFirstChildOfClass("UIStroke")
+    local accent = btnFrame:FindFirstChild("Accent")
+    local theme = getThemeColor()
+    local h, sat = theme:ToHSV()
+    local bright = Color3.fromHSV(h, math.clamp(sat * 0.8, 0, 1), 1)
     btnFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 
     if active then
         if bg then
             bg.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)),
-                ColorSequenceKeypoint.new(0.35, Color3.fromRGB(248, 248, 252)),
-                ColorSequenceKeypoint.new(0.70, Color3.fromRGB(225, 225, 235)),
-                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(195, 195, 208)),
+                ColorSequenceKeypoint.new(0.00, bright),
+                ColorSequenceKeypoint.new(1.00, theme),
             })
         end
-        if label then label.TextColor3 = Color3.fromRGB(15, 15, 18) end
+        if label then label.TextColor3 = Color3.fromRGB(12, 12, 16) end
         if stroke then
-            stroke.Color = Color3.fromRGB(255, 255, 255)
-            stroke.Thickness = 1.8
-            stroke.Transparency = 0.05
+            stroke.Color = bright
+            stroke.Thickness = 2
+            stroke.Transparency = 0
         end
+        if accent then accent.BackgroundColor3 = Color3.fromRGB(12, 12, 16) end
     else
         if bg then
             bg.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(70, 70, 78)),
-                ColorSequenceKeypoint.new(0.35, Color3.fromRGB(28, 28, 34)),
-                ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 14)),
-                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
+                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(26, 26, 36)),
+                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(10, 10, 15)),
             })
         end
         if label then label.TextColor3 = Color3.fromRGB(255, 255, 255) end
         if stroke then
-            stroke.Color = Color3.fromRGB(70, 70, 78)
-            stroke.Thickness = 1
-            stroke.Transparency = 0.45
+            stroke.Color = theme
+            stroke.Thickness = 1.4
+            stroke.Transparency = 0.35
         end
+        if accent then accent.BackgroundColor3 = theme end
     end
 end
 
@@ -7437,8 +7498,8 @@ function loadAllSettings()
     local savedBatAimbotSpeed = tonumber(data.batAimbotSpeed)
     -- Migrate the previous built-in default (58) to the faster V30 default.
     -- Other saved values remain user-configurable, within the UI-supported range.
-    if savedBatAimbotSpeed == 58 then
-        BAT_AIMBOT_SPEED = 90
+    if savedBatAimbotSpeed == 58 or savedBatAimbotSpeed == 90 then
+        BAT_AIMBOT_SPEED = 50
     elseif savedBatAimbotSpeed then
         BAT_AIMBOT_SPEED = readNumber(savedBatAimbotSpeed, BAT_AIMBOT_SPEED, 1, 200)
     end
@@ -7667,7 +7728,7 @@ function resetFloatingPositions()
     if MobilePanel and MobilePanel:FindFirstChild("FloatingPanel") then
         local container = MobilePanel:FindFirstChild("FloatingPanel")
         container.AnchorPoint = Vector2.new(1, 0)
-        container.Position = UDim2.new(1, -8, 0, 110)
+        container.Position = UDim2.new(1, -8, 0, 40)
         savedMobilePanelPos = nil
         savedButtonPositions = {}
         if container:FindFirstChild("ButtonsContainer") then
@@ -7759,7 +7820,7 @@ function resetToFactoryDefaults()
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
-        BAT_AIMBOT_SPEED = 90
+        BAT_AIMBOT_SPEED = 50
         dropMode = 1
         stretchEnabled = false
         stretchFOV = 120
@@ -7872,9 +7933,9 @@ function getDefaultButtonPosition(btnName)
         TpDown = 5, Carry = 6, Lagger1 = 7, Lagger2 = 8
     }
     local order = orderMap[btnName] or 0
-    local row = _floor(order / 2)
-    local col = order % 2
-    return col * (BTN_W + GAP), row * (BTN_H + GAP + 10)
+    local row = _floor(order / 3)
+    local col = order % 3
+    return col * (BTN_W + GAP), row * (BTN_H + GAP)
 end
 
 _G.AmbitiousHideMobileButtons = _G.AmbitiousHideMobileButtons == true
@@ -10018,11 +10079,12 @@ function buildGui()
     spacer.LayoutOrder = getNextOrder(keyPage)
     spacer.ZIndex = 7
 
+    _shoxLayoutResetOnce()
     pbFrame = Instance.new("Frame", gui)
-    pbFrame.Size = UDim2.new(0, 260, 0, 64)
-    pbFrame.Position = UDim2.new(0.5, -130, 1, -60)
-    pbFrame.BackgroundColor3 = Color3.fromRGB(10,10,10)
-    pbFrame.BackgroundTransparency = 0
+    pbFrame.Size = UDim2.new(0, 236, 0, 46)
+    pbFrame.Position = UDim2.new(0.5, -118, 0, 56)
+    pbFrame.BackgroundColor3 = Color3.fromRGB(12,12,18)
+    pbFrame.BackgroundTransparency = 0.08
     pbFrame.BorderSizePixel = 0
     pbFrame.Active = true
     pbFrame.Selectable = false
@@ -10055,17 +10117,22 @@ function buildGui()
     end
 
     local corner = Instance.new("UICorner", pbFrame)
-    corner.CornerRadius = UDim.new(0, 14)
+    corner.CornerRadius = UDim.new(0, 12)
+    local pbStroke = Instance.new("UIStroke", pbFrame)
+    pbStroke.Name = "PBStroke"
+    pbStroke.Color = getThemeColor()
+    pbStroke.Thickness = 1.4
+    pbStroke.Transparency = 0.35
 
     fpsNeon = Instance.new("TextLabel", pbFrame)
     fpsNeon.Name = "FPSNeon"
-    fpsNeon.Size = UDim2.new(1, -20, 0, 14)
-    fpsNeon.Position = UDim2.new(0, 12, 0, 6)
+    fpsNeon.Size = UDim2.new(1, -20, 0, 12)
+    fpsNeon.Position = UDim2.new(0, 12, 0, 4)
     fpsNeon.BackgroundTransparency = 1
     fpsNeon.Text = "--FPS · --ms"
     fpsNeon.TextColor3 = Color3.fromRGB(210, 210, 220)
     fpsNeon.Font = SHOX_UI_FONT
-    fpsNeon.TextSize = 11
+    fpsNeon.TextSize = 10
     fpsNeon.TextXAlignment = Enum.TextXAlignment.Left
     fpsNeon.TextStrokeTransparency = 1
     fpsNeon.ZIndex = 13
@@ -10073,7 +10140,7 @@ function buildGui()
     local progressRow = Instance.new("Frame", pbFrame)
     progressRow.Name = "ProgressRow"
     progressRow.Size = UDim2.new(1, -24, 0, 14)
-    progressRow.Position = UDim2.new(0, 12, 0, 28)
+    progressRow.Position = UDim2.new(0, 12, 0, 22)
     progressRow.BackgroundTransparency = 1
     progressRow.ZIndex = 11
 
@@ -10126,11 +10193,8 @@ function buildGui()
             local dt = now - lastFrame
             lastFrame = now
             if dt > 0 then
-                table.insert(fpsSamples, math.clamp(1 / dt, 1, 240))
-                if #fpsSamples > 30 then table.remove(fpsSamples, 1) end
-                local removed = table.remove(fpsSamples, 1)
-                    fpsSum = fpsSum - (removed or 0)
-                    fpsAvg = fpsSum / #fpsSamples
+                -- v1.7.0: fpsSum war nie deklariert -> Fehler in jedem Frame (Log-Spam, Lag)
+                fpsAvg = fpsAvg + (math.clamp(1 / dt, 1, 240) - fpsAvg) * 0.05
             end
         end)
         while fpsNeon and fpsNeon.Parent and pbFrame and pbFrame.Parent do
@@ -10148,6 +10212,7 @@ function buildGui()
 end
 
 function createMobilePanel()
+    _shoxLayoutResetOnce()
     local panel = Instance.new("ScreenGui")
     panel.Name = "FictionHubMobilePanel"
     panel.ResetOnSpawn = false
@@ -10163,10 +10228,10 @@ function createMobilePanel()
 
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
-    local COLUMNS = 2
-    local ROWS = 5
+    local COLUMNS = 3
+    local ROWS = 3
     local PANEL_W = BTN_W * COLUMNS + GAP * (COLUMNS - 1)
-    local PANEL_H = BTN_H * ROWS + (GAP + 10) * (ROWS - 1)
+    local PANEL_H = BTN_H * ROWS + GAP * (ROWS - 1)
 
     local container = Instance.new("Frame", panel)
     container.Name = "FloatingPanel"
@@ -10176,7 +10241,7 @@ function createMobilePanel()
     if type(mpp) == "table" then
         container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -8, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
     else
-        container.Position = UDim2.new(1, -8, 0, 110)
+        container.Position = UDim2.new(1, -8, 0, 40)
     end
     container.BackgroundTransparency = 1
     container.BorderSizePixel = 0
@@ -10223,7 +10288,7 @@ function createMobilePanel()
         end
 
         btn.BackgroundColor3 = INACTIVE_BG
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 14)
 
         local bgGrad = Instance.new("UIGradient", btn)
         bgGrad.Name = "BtnGrad"
@@ -10241,6 +10306,15 @@ function createMobilePanel()
         stroke.Transparency = 0.45
         stroke.Name = "NormalStroke"
 
+        local accent = Instance.new("Frame", btn)
+        accent.Name = "Accent"
+        accent.AnchorPoint = Vector2.new(0.5, 1)
+        accent.Position = UDim2.new(0.5, 0, 1, -5)
+        accent.Size = UDim2.new(0.42, 0, 0, 3)
+        accent.BorderSizePixel = 0
+        accent.ZIndex = 12
+        Instance.new("UICorner", accent).CornerRadius = UDim.new(1, 0)
+
         local label = Instance.new("TextLabel", btn)
         label.Name = "TextLabel"
         label.Size = UDim2.new(1, 0, 1, 0)
@@ -10248,7 +10322,7 @@ function createMobilePanel()
         label.Text = text
         label.TextColor3 = Color3.fromRGB(255, 255, 255)
         label.Font = SHOX_UI_FONT
-        label.TextSize = 10
+        label.TextSize = 11
         label.TextWrapped = true
         label.ZIndex = 11
 
@@ -10446,7 +10520,7 @@ function createMobilePanel()
     -- Preserve the restored/saved position; only use the default if no position exists.
     container.AnchorPoint = Vector2.new(1, 0)
     if not savedMobilePanelPos then
-        container.Position = UDim2.new(1, -8, 0, 110)
+        container.Position = UDim2.new(1, -8, 0, 40)
     end
     container.Visible = true
     panel.Enabled = true
@@ -10935,7 +11009,7 @@ function updateUIFromLoaded()
             if type(mpp) == "table" then
                 container.Position = UDim2.new(tonumber(mpp.XScale) or 1, tonumber(mpp.XOffset) or -8, tonumber(mpp.YScale) or 0, tonumber(mpp.YOffset) or 110)
             else
-                container.Position = UDim2.new(1, -8, 0, 110)
+                container.Position = UDim2.new(1, -8, 0, 40)
             end
             container.Visible = true
             MobilePanel.Enabled = true
