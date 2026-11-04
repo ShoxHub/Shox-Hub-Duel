@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.7.0"
+ShoxHubState.Version     = "v1.6.2"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -44,8 +44,6 @@ repeat task.wait() until game:IsLoaded()
 -- ============================================================
 -- SHox Code Sniper style intro (visual/audio only; no Code Sniper hooks)
 -- ============================================================
-local shoxIntroFinish = nil
-do
 local ShoxHubPlayers = game:GetService("Players")
 local ShoxHubTweenService = game:GetService("TweenService")
 local ShoxHubRunService = game:GetService("RunService")
@@ -95,7 +93,7 @@ local function shoxIntroParent()
     return pg or game:GetService("CoreGui")
 end
 
-shoxIntroFinish = function()
+local function shoxIntroFinish()
     ShoxIntro.Running = false
     if ShoxIntroHeartbeat then ShoxIntroHeartbeat:Disconnect(); ShoxIntroHeartbeat = nil end
     if ShoxIntroSound then
@@ -375,7 +373,7 @@ task.spawn(function()
     end
     shoxIntroPlay()
 end)
-end
+
 
 -- Intro is self-cleaning; the existing ShoxHub UI remains unchanged below.
 -- ============================================================
@@ -1431,11 +1429,6 @@ infJumpMode    = "HOLD"
 
 bodyLockEnabled = false
 bodyLockRange = 20
-autoBodyLockOffWhileCarry = false
-local autoBodyLockOffWhileCarrySetVisual = nil
-local _blCarrySuppressed = false
-autoActionAfterDrop = "None"
-AUTO_ACTION_AFTER_DROP_OPTIONS = {"None", "Bat Aimbot", "Bat Bypass", "TP Bat", "Body Lock", "Carry Speed", "Lagger 1", "Lagger 2"}
 bodyLockRangeBox = nil
 local bodyLockSetVisual = nil
 _bodyLockConn = nil
@@ -2619,7 +2612,7 @@ local Steal = {
 }
 
 local isStealing = false
-local autoGrabSetDelayRadius = 14
+local autoGrabSetDelayRadius = 9
 local autoGrabStopTime = 0.96
 local autoGrabStopEnabled = true
 
@@ -2641,9 +2634,9 @@ end
 
 local function getAutoGrabStopTime()
     local dur = (Steal and Steal.StealDuration) or 1.3
-    if autoStealVariant == 2 then return dur * 0.72 end      -- Semi: snappier
-    if autoStealVariant == 3 then return dur * 0.80 end      -- Semi Normal: snappier
-    return dur * 0.65                                       -- Normal: snappier
+    if autoStealVariant == 2 then return dur * 0.80 end
+    if autoStealVariant == 3 then return dur * 0.90 end
+    return dur * 0.73
 end
 
 local _plotsCache = nil
@@ -2699,36 +2692,34 @@ local function findNearestPrompt()
         -- A destroyed cached prompt is stale; continue with a fresh scan.
     end
     for _, plot in ipairs(plotsRoot:GetChildren()) do
-        if not isMyPlotByName(plot.Name) then
-            local pods = plot:FindFirstChild("AnimalPodiums")
-            if pods then
-                for _, pod in ipairs(pods:GetChildren()) do
-                    pcall(function()
-                        local base = pod:FindFirstChild("Base")
-                        local spawn = base and base:FindFirstChild("Spawn")
-                        if spawn then
-                            local sp = spawn.Position
-                            local dx = sp.X - rpos.X
-                            local dy = sp.Y - rpos.Y
-                            local dz = sp.Z - rpos.Z
-                            local dist = _sqrt(dx*dx + dy*dy + dz*dz)
-                            if dist < nearestDist and dist <= Steal.StealRadius then
-                                local att = spawn:FindFirstChild("PromptAttachment")
-                                if att then
-                                    for _, child in ipairs(att:GetChildren()) do
-                                        if child:IsA("ProximityPrompt") and child.ActionText and child.ActionText:find("Steal") then
-                                            nearestPrompt = child
-                                            nearestDist = dist
-                                            nearestName = pod.Name
-                                            break
-                                        end
-                                    end
+        if isMyPlotByName(plot.Name) then continue end
+        local pods = plot:FindFirstChild("AnimalPodiums")
+        if not pods then continue end
+        for _, pod in ipairs(pods:GetChildren()) do
+            pcall(function()
+                local base = pod:FindFirstChild("Base")
+                local spawn = base and base:FindFirstChild("Spawn")
+                if spawn then
+                    local sp = spawn.Position
+                    local dx = sp.X - rpos.X
+                    local dy = sp.Y - rpos.Y
+                    local dz = sp.Z - rpos.Z
+                    local dist = _sqrt(dx*dx + dy*dy + dz*dz)
+                    if dist < nearestDist and dist <= Steal.StealRadius then
+                        local att = spawn:FindFirstChild("PromptAttachment")
+                        if att then
+                            for _, child in ipairs(att:GetChildren()) do
+                                if child:IsA("ProximityPrompt") and child.ActionText and child.ActionText:find("Steal") then
+                                    nearestPrompt = child
+                                    nearestDist = dist
+                                    nearestName = pod.Name
+                                    break
                                 end
                             end
                         end
-                    end)
+                    end
                 end
-            end
+            end)
         end
     end
     _nearestPromptCache.time = _tick()
@@ -3922,24 +3913,25 @@ local function updateESP()
     end
     local color = getThemeColor()
     for _, plr in ipairs(currentPlayers) do
-        if plr ~= LP then
-            local char = plr.Character
-            if not char then
-                if espHighlightCache[plr] then
-                    pcall(function() espHighlightCache[plr]:Destroy() end)
-                    espHighlightCache[plr] = nil
+        if plr == LP then continue end
+        local char = plr.Character
+        if not char then
+            if espHighlightCache[plr] then
+                pcall(function() espHighlightCache[plr]:Destroy() end)
+                espHighlightCache[plr] = nil
+            end
+            if espBillboardCache[plr] then
+                pcall(function() espBillboardCache[plr]:Destroy() end)
+                espBillboardCache[plr] = nil
+            end
+            if espTracerCache[plr] then
+                for _, ln in ipairs(espTracerCache[plr]) do
+                    pcall(function() ln.Visible = false end)
                 end
-                if espBillboardCache[plr] then
-                    pcall(function() espBillboardCache[plr]:Destroy() end)
-                    espBillboardCache[plr] = nil
-                end
-                if espTracerCache[plr] then
-                    for _, ln in ipairs(espTracerCache[plr]) do
-                        pcall(function() ln.Visible = false end)
-                    end
-                end
-            else
-                local tRoot = char:FindFirstChild("HumanoidRootPart")
+            end
+            continue
+        end
+        local tRoot = char:FindFirstChild("HumanoidRootPart")
         local tHead = char:FindFirstChild("Head")
         local tHum = char:FindFirstChildOfClass("Humanoid")
         local alive = tRoot and tHead and tHum and tHum.Health > 0
@@ -4033,8 +4025,6 @@ local function updateESP()
                 end
             end
         end
-    end
-    end
     end
 end
 
@@ -4190,25 +4180,13 @@ local function _bodyLockTick()
 
     -- Rotate on the horizontal plane only; avoid writing AngularVelocity every frame.
     local goal = CFrame.lookAt(root.Position, flatTarget)
-    root.CFrame = root.CFrame:Lerp(goal, 0.48)
+    root.CFrame = root.CFrame:Lerp(goal, 0.25)
 end
 
 function startBodyLock()
     if _bodyLockConn then _bodyLockConn:Disconnect() end
     _bodyLockConn = RunService.Heartbeat:Connect(function()
-        if not bodyLockEnabled then return end
-        if autoBodyLockOffWhileCarry then
-            local carrying = ShoxHubIsCarrying()
-            if carrying and not _blCarrySuppressed then
-                _blCarrySuppressed = true
-                _suppressBodyLock()
-                return
-            elseif not carrying and _blCarrySuppressed then
-                _blCarrySuppressed = false
-                _unsuppressBodyLock(false)
-            end
-        end
-        if _blSuppressCount > 0 then return end
+        if not bodyLockEnabled or _blSuppressCount > 0 then return end
         local ok, err = xpcall(_bodyLockTick, debug.traceback)
         if not ok then
             warn("[ShoxHub] Body Lock tick recovered: " .. tostring(err))
@@ -4792,14 +4770,18 @@ function startAimbotAdapt()
             nextVelocity = _V3new(flatNext.X, nextVelocity.Y, flatNext.Z)
         end
         root.AssemblyLinearVelocity = nextVelocity
-        root.AssemblyAngularVelocity = _V3zero
         local speed3 = targetVel.Magnitude
         local predictTime = _clamp(speed3 / 150, 0.05, 0.2)
         local predictedPos = targetPos + targetVel * predictTime
         local toPredict = predictedPos - myPos
         if toPredict.Magnitude > 0.1 then
-            local flatLook = _V3new(predictedPos.X, myPos.Y, predictedPos.Z)
-            root.CFrame = root.CFrame:Lerp(_CFlookAt(myPos, flatLook), 0.35)
+            local goalCF = _CFlookAt(myPos, predictedPos)
+            local diffCF = root.CFrame:Inverse() * goalCF
+            local rx, ry, rz = diffCF:ToEulerAnglesXYZ()
+            rx = _clamp(rx, -2.5, 2.5)
+            ry = _clamp(ry, -2.5, 2.5)
+            rz = _clamp(rz, -2.5, 2.5)
+            root.AssemblyAngularVelocity = root.CFrame:VectorToWorldSpace(_V3new(rx * 42, ry * 42, rz * 42))
         end
         local distToTarget = (root.Position - target.Position).Magnitude
         if distToTarget <= 8 then trySwing() end
@@ -4898,7 +4880,7 @@ BB.ZCFG = BB.ZCFG or {
 local function bbAverageVector(history)
     if #history == 0 then return Vector3.zero end
     local total = Vector3.zero
-    for _, v in ipairs(history) do total = total + v end
+    for _, v in ipairs(history) do total += v end
     return total / #history
 end
 
@@ -4976,12 +4958,10 @@ end
 
 local function bbRotateRoot(root, direction, dt)
     if direction.Magnitude < 0.01 then return end
-    root.AssemblyAngularVelocity = Vector3.zero
-    local flatDir = Vector3.new(direction.X, 0, direction.Z)
-    if flatDir.Magnitude > 0.1 then
-        local targetCF = CFrame.lookAt(root.Position, root.Position + flatDir.Unit)
-        root.CFrame = root.CFrame:Lerp(targetCF, 0.4)
-    end
+    local axis = root.CFrame.LookVector:Cross(direction.Unit)
+    local angle = math.asin(math.clamp(axis.Magnitude, -1, 1))
+    local angular = axis.Magnitude > 0.01 and axis.Unit * math.min(angle * 10, 8) or Vector3.zero
+    root.AssemblyAngularVelocity = root.AssemblyAngularVelocity:Lerp(angular, math.min(math.max((tonumber(dt) or (1/60)) * 15, 0), 1))
 end
 
 local function bbSamplePing()
@@ -5144,7 +5124,7 @@ function BB.Start()
         end
 
         local serverDelay = Z.currentPing + ZCFG.SERVER_TICKRATE
-        if quickTurn then serverDelay = serverDelay * ZCFG.QUICK_DIRECTION_CHANGE_MULTIPLIER end
+        if quickTurn then serverDelay *= ZCFG.QUICK_DIRECTION_CHANGE_MULTIPLIER end
 
         local predictionTime = ZCFG.PREDICTION_TIME * 1.1
         local predicted = targetPos + predictionVelocity * (serverDelay + predictionTime)
@@ -5154,16 +5134,16 @@ function BB.Start()
         if accelerationMagnitude > 120 then
             acceleration = acceleration.Unit * 120
         end
-        predicted = predicted + (acceleration * ZCFG.ACCELERATION_PREDICTION_WEIGHT * (serverDelay * serverDelay * 0.5)
-)        if airborne then
+        predicted += acceleration * ZCFG.ACCELERATION_PREDICTION_WEIGHT * (serverDelay * serverDelay * 0.5)
+        if airborne then
             local totalPredictionTime = serverDelay + predictionTime
-            predicted = predicted + Vector3.new(0, -0.5 * ZCFG.GRAVITY * totalPredictionTime * totalPredictionTime, 0)
+            predicted += Vector3.new(0, -0.5 * ZCFG.GRAVITY * totalPredictionTime * totalPredictionTime, 0)
         end
 
         local flatPrediction = Vector3.new(predictionVelocity.X, 0, predictionVelocity.Z)
         if flatPrediction.Magnitude > 1 then
-            predicted = predicted + (flatPrediction.Unit * ZCFG.PREDICT_AHEAD
-)        end
+            predicted += flatPrediction.Unit * ZCFG.PREDICT_AHEAD
+        end
 
         local toTarget = predicted - root.Position
         bbRotateRoot(root, toTarget, dt)
@@ -5481,9 +5461,10 @@ local function tpBatClosestPlayer(root)
         local character = player ~= LP and player.Character
         local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
         local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if targetRoot and humanoid and humanoid.Health > 0 then
+        if targetRoot and humanoid and humanoid.Health > 0
+            and tpBatPlayerHasBat(player) then
             local candidateDistance = (root.Position - targetRoot.Position).Magnitude
-            if candidateDistance < distance and candidateDistance <= 120 then
+            if candidateDistance < distance and candidateDistance <= 80 then
                 closest, distance = player, candidateDistance
             end
         end
@@ -5495,12 +5476,9 @@ local function tpBatFollowTarget(root, targetRoot)
     if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
         return false
     end
-    -- Position slightly behind and elevated above target for maximum hit advantage
-    local offsetCF = CFrame.new(0, 1.0, 2.2)
-    local targetPos = targetRoot.Position
-    root.CFrame = CFrame.lookAt((targetRoot.CFrame * offsetCF).Position, targetPos)
-    root.AssemblyLinearVelocity = Vector3.zero
-    root.AssemblyAngularVelocity = Vector3.zero
+    local offsetCF = CFrame.new(0, 1.2, -2.5)
+    root.CFrame = targetRoot.CFrame * offsetCF
+    root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
     return true
 end
 
@@ -6037,46 +6015,15 @@ function runDropBrainrot()
     end)
 end
 
-local function triggerAutoActionAfterDrop()
-    if autoActionAfterDrop == "Bat Aimbot" then
-        if not autoBatEnabled then enableAutoBat() end
-    elseif autoActionAfterDrop == "Bat Bypass" then
-        if not (SnowVS and SnowVS.BatBypass and SnowVS.BatBypass.Enabled) then
-            pcall(function() SnowVS.BatBypass.Start() end)
-            if autoBatV2SetVisual then autoBatV2SetVisual(true) end
-        end
-    elseif autoActionAfterDrop == "TP Bat" then
-        if not batDesyncTpEnabled then startAlvaroTP() end
-    elseif autoActionAfterDrop == "Body Lock" then
-        bodyLockEnabled = true
-        if bodyLockSetVisual then bodyLockSetVisual(true) end
-        startBodyLock()
-    elseif autoActionAfterDrop == "Carry Speed" then
-        CarrySystem.speedToggled = true
-        if carrySystemToggleSetter then carrySystemToggleSetter(true) end
-    elseif autoActionAfterDrop == "Lagger 1" then
-        CarrySystem.laggerMode = 1
-        laggerToggled = true
-        if laggerToggleSetter then laggerToggleSetter(true) end
-    elseif autoActionAfterDrop == "Lagger 2" then
-        CarrySystem.laggerMode = 2
-        laggerCarryToggled = true
-        if laggerCarryToggleSetter then laggerCarryToggleSetter(true) end
-    end
-    if autoBodyLockOffWhileCarry and bodyLockEnabled and _blCarrySuppressed then
-        _blCarrySuppressed = false
-        _unsuppressBodyLock(false)
-    end
-end
-
 function executeDropWithToggle(setVisual)
     if dropActive then
+        -- A caller may already have switched the UI on before discovering
+        -- that a drop is in progress. Keep the visual state in sync.
         if setVisual then pcall(setVisual, false) end
         return
     end
     task.spawn(function()
         if setVisual then setVisual(true) end
-        pcall(triggerAutoActionAfterDrop)
         runDropBrainrot()
         while dropActive do task.wait() end
         task.wait(0.1)
@@ -6095,8 +6042,6 @@ local function applyAntiLagDerender(obj)
 
         local isPart = obj:IsA("BasePart")
         local isSurfaceImage = obj:IsA("Decal") or obj:IsA("Texture")
-        local isSurfaceApp = obj:IsA("SurfaceAppearance")
-        local isHighlight = obj:IsA("Highlight") or obj:IsA("SelectionBox")
         local isEffect =
             obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
             or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
@@ -6106,40 +6051,27 @@ local function applyAntiLagDerender(obj)
             or obj:IsA("DepthOfFieldEffect") or obj:IsA("BrightnessEffect")
             or obj:IsA("DitheringEffect")
 
-        if not isPart and not isSurfaceImage and not isEffect and not isSurfaceApp and not isHighlight then return end
+        if not isPart and not isSurfaceImage and not isEffect then return end
         if isEffect and obj:IsA("PostEffect") and obj.Parent == Lighting and skyTheme ~= "Off" then
             return
         end
 
+        -- Save each eligible object's original look once so Anti-Lag can be toggled off.
         local props = antiLagOriginalProperties[obj]
         if props == nil then
             props = {}
             antiLagOriginalProperties[obj] = props
         end
 
+        -- Reduce map surface detail locally without deleting or moving instances.
         if isPart then
             if props.Material == nil then props.Material = obj.Material end
             if props.Reflectance == nil then props.Reflectance = obj.Reflectance end
-            if props.CastShadow == nil then props.CastShadow = obj.CastShadow end
             obj.Material = Enum.Material.SmoothPlastic
             obj.Reflectance = 0
-            obj.CastShadow = false
-
-            -- Neutralize rainbow/mutations on brainrots/animals/characters to clean neutral gray
-            local model = obj:FindFirstAncestorOfClass("Model")
-            if model and (model.Name:lower():find("brainrot") or model.Name:lower():find("podium") or model.Parent and model.Parent.Name == "AnimalPodiums") then
-                if props.Color == nil then props.Color = obj.Color end
-                obj.Color = Color3.fromRGB(160, 160, 160)
-            end
         elseif isSurfaceImage then
             if props.Transparency == nil then props.Transparency = obj.Transparency end
             obj.Transparency = 1
-        elseif isSurfaceApp then
-            if props.Parent == nil then props.Parent = obj.Parent end
-            pcall(function() obj.Parent = nil end)
-        elseif isHighlight then
-            if props.Enabled == nil then props.Enabled = obj.Enabled end
-            obj.Enabled = false
         else
             if props.Enabled == nil then props.Enabled = obj.Enabled end
             obj.Enabled = false
@@ -6215,8 +6147,6 @@ function disableAntiLag()
                 if props.Material ~= nil then obj.Material = props.Material end
                 if props.Reflectance ~= nil then obj.Reflectance = props.Reflectance end
                 if props.Transparency ~= nil then obj.Transparency = props.Transparency end
-                if props.Color ~= nil then obj.Color = props.Color end
-                if props.Parent ~= nil then obj.Parent = props.Parent end
             end)
         end
         antiLagOriginalProperties[obj] = nil
@@ -6233,7 +6163,7 @@ function enableCustomFov()
     end
     fovEnabled = true
     if cam then
-        pcall(function() cam.FieldOfViewMode = Enum.FieldOfViewMode.Vertical end)
+        pcall(function() cam.FieldOfViewMode = Enum.FieldOfViewMode.Diagonal end)
         pcall(function() cam.FieldOfView = fovValue end)
     end
     if customFovConn then customFovConn:Disconnect(); customFovConn = nil end
@@ -7988,8 +7918,8 @@ function getDefaultButtonPosition(btnName)
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
     local orderMap = {
-        InstaReset = 0, DropBR = 1, TPBat = 2, AutoBat = 3, AutoLeft = 4,
-        AutoRight = 5, TpDown = 6, Carry = 7, Lagger1 = 8, Lagger2 = 9
+        DropBR = 0, TPBat = 1, AutoLeft = 2, AutoBat = 3, AutoRight = 4,
+        TpDown = 5, Carry = 6, Lagger1 = 7, Lagger2 = 8
     }
     local order = orderMap[btnName] or 0
     local row = _floor(order / 2)
@@ -8252,7 +8182,6 @@ function buildGui()
     main.BackgroundTransparency = 0
     main.BorderSizePixel = 0
     main.ClipsDescendants = true
-    main.Active = true
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 18)
 
     backgroundImage = Instance.new("ImageLabel", main)
@@ -8272,38 +8201,27 @@ function buildGui()
 
     local titleFrame = Instance.new("Frame", main)
     titleFrame.Name = "TitleFrame"
-    titleFrame.Size = UDim2.new(1, -60, 0, 42)
-    titleFrame.Position = UDim2.new(0, 16, 0, 8)
+    titleFrame.Size = UDim2.new(1, -24, 0, 116)
+    titleFrame.Position = UDim2.new(0, 12, 0, 6)
     titleFrame.BackgroundTransparency = 1
     titleFrame.ZIndex = 20
 
     local titleImage = Instance.new("TextLabel", titleFrame)
     titleImage.Name = "TitleImage"
-    titleImage.AnchorPoint = Vector2.new(0, 0.5)
-    titleImage.Size = UDim2.new(0, 120, 1, 0)
-    titleImage.Position = UDim2.new(0, 0, 0.5, 0)
+    titleImage.AnchorPoint = Vector2.new(0.5, 0.5)
+    titleImage.Size = UDim2.new(1, 0, 1, 0)
+    titleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     titleImage.BackgroundTransparency = 1
-    titleImage.Text = "SHOX HUB"
+    titleImage.Text = "SHOX"
     titleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
     titleImage.Font = SHOX_UI_FONT
-    titleImage.TextSize = 18
-    titleImage.TextXAlignment = Enum.TextXAlignment.Left
+    titleImage.TextScaled = true
     titleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    titleImage.TextStrokeTransparency = 0.25
+    titleImage.TextStrokeTransparency = 0.12
     titleImage.ZIndex = 21
-
-    local verBadge = Instance.new("TextLabel", titleFrame)
-    verBadge.AnchorPoint = Vector2.new(0, 0.5)
-    verBadge.Size = UDim2.new(0, 50, 0, 18)
-    verBadge.Position = UDim2.new(0, 108, 0.5, 0)
-    verBadge.BackgroundTransparency = 0.65
-    verBadge.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    verBadge.Text = "v1.7.0"
-    verBadge.TextColor3 = Color3.fromRGB(220, 220, 230)
-    verBadge.Font = SHOX_UI_FONT
-    verBadge.TextSize = 10
-    verBadge.ZIndex = 22
-    Instance.new("UICorner", verBadge).CornerRadius = UDim.new(0, 6)
+    local titleConstraint = Instance.new("UITextSizeConstraint", titleImage)
+    titleConstraint.MaxTextSize = 54
+    titleConstraint.MinTextSize = 22
 
     local closeBtn = Instance.new("TextButton", main)
     closeBtn.Size = UDim2.new(0, 32, 0, 32)
@@ -8327,43 +8245,36 @@ function buildGui()
     end)
 
     miniBtn = Instance.new("TextButton", gui)
-    miniBtn.Size = UDim2.new(0, 112, 0, 34)
+    miniBtn.Size = UDim2.new(0, 160, 0, 42)
     miniBtn.Position = UDim2.new(0, 16, 0, 58)
     miniBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-    miniBtn.BackgroundTransparency = 0.34
+    miniBtn.BackgroundTransparency = 0
     miniBtn.BorderSizePixel = 0
     miniBtn.ClipsDescendants = true
     miniBtn.Text = ""
-    miniBtn.AutoButtonColor = false
+    miniBtn.TextColor3 = Color3.fromRGB(210, 210, 220)
+    miniBtn.Font = SHOX_UI_FONT
+    miniBtn.TextSize = 16
     miniBtn.ZIndex = 20
     miniBtn.Visible = false
     Instance.new("UICorner", miniBtn).CornerRadius = UDim.new(1, 0)
 
-    local miniGrad = Instance.new("UIGradient", miniBtn)
-    miniGrad.Rotation = 90
-    miniGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(48, 48, 56)),
-        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(12, 12, 16)),
-    })
-
-    local miniStroke = Instance.new("UIStroke", miniBtn)
-    miniStroke.Color = Color3.fromRGB(80, 80, 92)
-    miniStroke.Thickness = 1
-    miniStroke.Transparency = 0.4
-
     local miniTitleImage = Instance.new("TextLabel", miniBtn)
     miniTitleImage.Name = "MiniTitleImage"
     miniTitleImage.AnchorPoint = Vector2.new(0.5, 0.5)
-    miniTitleImage.Size = UDim2.new(1, 0, 1, 0)
+    miniTitleImage.Size = UDim2.new(0.88, 0, 0.88, 0)
     miniTitleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     miniTitleImage.BackgroundTransparency = 1
-    miniTitleImage.Text = "⚡ SHOX"
+    miniTitleImage.Text = "SHOX"
     miniTitleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
     miniTitleImage.Font = SHOX_UI_FONT
-    miniTitleImage.TextSize = 13
+    miniTitleImage.TextScaled = true
     miniTitleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    miniTitleImage.TextStrokeTransparency = 0.2
+    miniTitleImage.TextStrokeTransparency = 0.12
     miniTitleImage.ZIndex = 21
+    local miniTitleConstraint = Instance.new("UITextSizeConstraint", miniTitleImage)
+    miniTitleConstraint.MaxTextSize = 28
+    miniTitleConstraint.MinTextSize = 16
 
     local slideTween = nil
     local slideTweenGeneration = 0
@@ -8433,13 +8344,13 @@ function buildGui()
     local tabsDivider = Instance.new("Frame", main)
     tabsDivider.Name = "TabsDivider"
     tabsDivider.Size = UDim2.new(1, -32, 0, 1)
-    tabsDivider.Position = UDim2.new(0, 16, 0, 52)
+    tabsDivider.Position = UDim2.new(0, 16, 0, 128)
     tabsDivider.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     tabsDivider.BackgroundTransparency = 0.25
     tabsDivider.BorderSizePixel = 0
     tabsDivider.ZIndex = 11
 
-    tabBar.Position = UDim2.new(0, 16, 0, 58)
+    tabBar.Position = UDim2.new(0, 16, 0, 136)
     tabBar.BackgroundTransparency = 1
     tabBar.ZIndex = 10
 
@@ -8450,8 +8361,8 @@ function buildGui()
     tabLayout.Padding = UDim.new(0, 4)
 
     local tabContent = Instance.new("Frame", main)
-    tabContent.Size = UDim2.new(1, -16, 1, -104)
-    tabContent.Position = UDim2.new(0, 8, 0, 96)
+    tabContent.Size = UDim2.new(1, -16, 1, -184)
+    tabContent.Position = UDim2.new(0, 8, 0, 176)
     tabContent.BackgroundTransparency = 1
     tabContent.ClipsDescendants = true
     tabContent.ZIndex = 5
@@ -9991,8 +9902,8 @@ function buildGui()
         local resetGrad = Instance.new("UIGradient", resetPosBtn)
         resetGrad.Rotation = 90
         resetGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(245, 245, 245)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(95, 95, 95)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(65, 95, 35)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(18, 25, 14)),
         })
 
         local resetStroke = Instance.new("UIStroke", resetPosBtn)
@@ -10340,8 +10251,8 @@ function createMobilePanel()
     local INACTIVE_BG = Color3.fromRGB(8,8,10)
 
     local buttons = {}
-    local buttonNames = {"InstaReset", "DropBR", "TPBat", "AutoBat", "AutoLeft", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
-    local buttonTexts = {"INSTA\nRESET", "DROP\nBR", "TP\nBAT", "BAT\nAIMBOT", "AUTO\nLEFT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
+    local buttonNames = {"DropBR", "TPBat", "AutoLeft", "AutoBat", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
+    local buttonTexts = {"DROP\nBR", "TP\nBAT", "AUTO\nLEFT", "BAT\nAIMBOT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
 
     local function createButton(name, text, order, isToggle, callback)
         local btn = Instance.new("TextButton", btnContainer)
@@ -10480,15 +10391,7 @@ function createMobilePanel()
     for i, name in ipairs(buttonNames) do
         local text = buttonTexts[i]
         local callback
-        if name == "InstaReset" then
-            callback = function(setActive)
-                setActive(true)
-                if _G.InstaReset and _G.InstaReset.Trigger then
-                    _G.InstaReset.Trigger()
-                end
-                task.delay(0.25, function() setActive(false) end)
-            end
-        elseif name == "DropBR" then
+        if name == "DropBR" then
             callback = function(setActive)
                 if autoBatEnabled then return end
                 setActive(true)
@@ -11088,7 +10991,7 @@ function updateUIFromLoaded()
             MobilePanel.Enabled = true
             local btnCont = container:FindFirstChild("ButtonsContainer")
             if btnCont then
-                local keyByButton = {InstaReset="instaReset", TpDown="tp", TPBat="tpBat", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
+                local keyByButton = {TpDown="tp", TPBat="tpBat", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
                 for _, btn in ipairs(btnCont:GetChildren()) do
                     if btn:IsA("TextButton") then
                         local defX, defY = getDefaultButtonPosition(btn.Name)
