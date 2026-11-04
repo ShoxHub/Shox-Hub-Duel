@@ -10,7 +10,18 @@ ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
 function ShoxHubState:Track(conn)
-    if conn then table.insert(self.Connections, conn) end
+    if conn then
+        table.insert(self.Connections, conn)
+        -- v1.7.1: tote Verbindungen regelmäßig entfernen (kein Speicherwachstum)
+        if #self.Connections > 150 then
+            local alive = {}
+            for _, c in ipairs(self.Connections) do
+                local okc, con = pcall(function() return c.Connected end)
+                if not okc or con then alive[#alive + 1] = c end
+            end
+            self.Connections = alive
+        end
+    end
     return conn
 end
 
@@ -33,7 +44,7 @@ function ShoxHubState:Destroy()
             if gui then pcall(function() gui:Destroy() end) end
         end
     end
-    print("[ShoxHub v1.6.0] Destroyed — Instanz freigegeben.")
+    print("[ShoxHub " .. tostring(self.Version) .. "] Destroyed — Instanz freigegeben.")
 end
 
 _G.BloodHoundsRunning = true
@@ -381,6 +392,32 @@ end)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+-- v1.7.1: Proxy, damit ALLE Heartbeat/RenderStepped/Stepped-Verbindungen automatisch getrackt
+-- und bei ShoxHubState:Destroy() getrennt werden (vorher nur 1 von ~34).
+do
+    local realRS = RunService
+    local function wrapSignal(sig)
+        return setmetatable({}, {__index = function(_, k)
+            if k == "Connect" or k == "connect" then
+                return function(_, fn) return ShoxHubState:Track(sig:Connect(fn)) end
+            end
+            local v = sig[k]
+            if type(v) == "function" then return function(_, ...) return v(sig, ...) end end
+            return v
+        end})
+    end
+    local wrapped = {
+        Heartbeat = wrapSignal(realRS.Heartbeat),
+        RenderStepped = wrapSignal(realRS.RenderStepped),
+        Stepped = wrapSignal(realRS.Stepped),
+    }
+    RunService = setmetatable({}, {__index = function(_, k)
+        if wrapped[k] then return wrapped[k] end
+        local v = realRS[k]
+        if type(v) == "function" then return function(_, ...) return v(realRS, ...) end end
+        return v
+    end})
+end
 local UIS = game:GetService("UserInputService")
 local TS = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
@@ -583,7 +620,6 @@ local function setupLV(hrp)
     lv.Parent = hrp
     CarrySystem._lvAtt = att
     CarrySystem._lvBoost = lv
-    pcall(function() hrp:SetNetworkOwner(LP) end)
 end
 
 function CarrySystem:scanSoftStealAnimals()
@@ -673,13 +709,6 @@ function CarrySystem:updateMovement(dt)
         return
     end
 
-    -- v1.6.0 SH-06/07 Fix: Global Movement Lock
-    if tick() < _globalMovementLock then
-        local lv = self._lvBoost
-        if lv then pcall(function() lv.PlaneVelocity = Vector2.zero; lv.Enabled = false end) end
-        return
-    end
-
     -- Only one system may write movement physics at a time.
     -- Auto Left/Right and the combat controllers own velocity while active.
     local batBypass = _G.SnowVS and _G.SnowVS.BatBypass
@@ -747,21 +776,38 @@ function CarrySystem:updateMovement(dt)
 
     local blocked = wallNormalFlat ~= nil
 
+    -- v1.7.1: CanCollide-Änderung gecacht/gedrosselt und nach der Wand wiederhergestellt
     if blocked then
-        for _, model in ipairs(char:GetChildren()) do
-            if model:IsA("Model") then
+        local ncNow = _tick()
+        if ncNow - (self._ncTime or 0) > 0.25 then
+            self._ncTime = ncNow
+            self._ncSet = self._ncSet or setmetatable({}, {__mode = "k"})
+            local ncSet = self._ncSet
+            local function ncModel(model)
                 for _, part in ipairs(model:GetDescendants()) do
-                    if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+                    if part:IsA("BasePart") and part.CanCollide then
+                        ncSet[part] = true
+                        part.CanCollide = false
+                    end
                 end
+            end
+            for _, model in ipairs(char:GetChildren()) do
+                if model:IsA("Model") then ncModel(model) end
+            end
+            for _, name in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
+                local v = char:FindFirstChild(name)
+                if v and v:IsA("ObjectValue") and v.Value and v.Value:IsA("Model") then ncModel(v.Value) end
             end
         end
-        for _, name in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
-            local v = char:FindFirstChild(name)
-            if v and v:IsA("ObjectValue") and v.Value and v.Value:IsA("Model") then
-                for _, part in ipairs(v.Value:GetDescendants()) do
-                    if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
-                end
+        self._unblockedAt = nil
+    elseif self._ncSet then
+        self._unblockedAt = self._unblockedAt or _tick()
+        if _tick() - self._unblockedAt > 0.6 then
+            for part in pairs(self._ncSet) do
+                if part.Parent then pcall(function() part.CanCollide = true end) end
             end
+            self._ncSet = nil
+            self._unblockedAt = nil
         end
     end
 
@@ -2424,7 +2470,7 @@ local function getCharParts()
 end
 
 local function claimOwnership(root)
-    pcall(function() root:SetNetworkOwner(LP) end)
+    -- v1.7.1: SetNetworkOwner ist clientseitig nicht möglich (entfernt)
 end
 
 function getActiveMoveSpeed()
@@ -2453,9 +2499,6 @@ local function _applyVelocitySpeed(dir, speed, hrp)
     if tick() < _globalMovementLock then return end
     if autoBatV2Enabled or batDesyncTpEnabled or autoBatEnabled then return end
     if dir and dir.Magnitude > 0.05 then
-        pcall(function()
-            if hrp.SetNetworkOwner then hrp:SetNetworkOwner(LP) end
-        end)
         local unit = dir.Unit
         local vy = hrp.AssemblyLinearVelocity.Y
         hrp.AssemblyLinearVelocity = _V3new(unit.X * speed, vy, unit.Z * speed)
@@ -2545,7 +2588,7 @@ local function applyAnimPack(packName)
         if not c then return end
         local animate = c:FindFirstChild("Animate")
         if not animate then return end
-        local function s(obj,id) if obj then obj.AnimationId = id end end
+        local function s(obj,id) if obj and obj.AnimationId ~= id then obj.AnimationId = id end end
         s(animate.idle and animate.idle.Animation1, pack.idle1)
         s(animate.idle and animate.idle.Animation2, pack.idle2)
         s(animate.walk and animate.walk.WalkAnim, pack.walk)
@@ -2652,8 +2695,30 @@ local function autoStealVariantFromName(name)
     return 1
 end
 
-local function getAutoGrabStopTime()
-    local dur = (Steal and Steal.StealDuration) or 1.3
+-- v1.7.2: Ping (gecacht), Ziel-Part-Cache und Hold-Dauer-Helfer fuer Auto Steal / Body Lock
+function ShoxGetPingSec()
+    local now = os.clock()
+    if now - (ShoxPingT or 0) > 0.5 then
+        ShoxPingT = now
+        pcall(function()
+            ShoxPingV = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+        end)
+    end
+    return ShoxPingV or 0.05
+end
+
+ShoxStealPartCache = setmetatable({}, {__mode = "k"})
+function ShoxStealTargetPart(prompt)
+    local c = ShoxStealPartCache[prompt]
+    if c and c.Parent then return c end
+    local tp = prompt.Parent and prompt.Parent.Parent
+    local part = tp and (tp:IsA("BasePart") and tp or tp:FindFirstChildWhichIsA("BasePart", true))
+    ShoxStealPartCache[prompt] = part
+    return part
+end
+
+local function getAutoGrabStopTime(durOverride)
+    local dur = durOverride or (Steal and Steal.StealDuration) or 1.3
     if autoStealVariant == 2 then return dur * 0.80 end
     if autoStealVariant == 3 then return dur * 0.90 end
     return dur * 0.73
@@ -2750,6 +2815,20 @@ local function findNearestPrompt()
     return nearestPrompt, nearestName
 end
 
+-- v1.7.1: Fallback, wenn getconnections fehlt (prompt:Fire() existiert nicht)
+function ShoxFirePrompt(prompt, hadTriggers)
+    if hadTriggers then return end
+    if type(fireproximityprompt) == "function" then
+        pcall(fireproximityprompt, prompt)
+    else
+        pcall(function()
+            prompt:InputHoldBegin()
+            task.wait((prompt.HoldDuration or 0) + 0.05)
+            prompt:InputHoldEnd()
+        end)
+    end
+end
+
 local function executeSteal(prompt, podName)
     if isStealing then return end
     if type(Steal.Data) == "table" then
@@ -2789,7 +2868,10 @@ local function executeSteal(prompt, podName)
         for _, f in ipairs(data.hold) do task.spawn(f) end
         local startTime = _tick()
         local duration = Steal.StealDuration
-        local stopTime = getAutoGrabStopTime()
+        -- v1.7.2: echte Hold-Dauer des Prompts nutzen (alle 3 Versionen skalieren damit)
+        local hd = prompt.HoldDuration
+        if type(hd) == "number" and hd >= 0.3 and hd <= 3 then duration = hd end
+        local stopTime = getAutoGrabStopTime(duration)
         local promptFired = false
         if autoGrabStopEnabled then
             while isStealing and Steal.AutoStealEnabled do
@@ -2798,8 +2880,7 @@ local function executeSteal(prompt, podName)
                 local progress = _clamp(elapsed / duration, 0, 1)
                 if progressFill then progressFill.Size = UDim2.new(progress, 0, 1, 0) end
                 if progressPct then progressPct.Text = _floor(progress * 100) .. "%" end
-                local targetParent = prompt.Parent and prompt.Parent.Parent
-                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                local targetPart = ShoxStealTargetPart(prompt)
                 if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -2826,8 +2907,7 @@ local function executeSteal(prompt, podName)
                     end
                     return
                 end
-                local targetParent = prompt.Parent and prompt.Parent.Parent
-                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                local targetPart = ShoxStealTargetPart(prompt)
                 if not targetPart then
                     isStealing = false
                     if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
@@ -2863,7 +2943,7 @@ local function executeSteal(prompt, podName)
                         promptFired = true
                         pcall(function()
                             for _, f in ipairs(data.trigger) do task.spawn(f) end
-                            if prompt then prompt:Fire() end
+                            if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
                         end)
                         break
                     end
@@ -2876,8 +2956,7 @@ local function executeSteal(prompt, podName)
                 local progress = _clamp(elapsed / duration, 0, 1)
                 if progressFill then progressFill.Size = UDim2.new(progress, 0, 1, 0) end
                 if progressPct then progressPct.Text = _floor(progress * 100) .. "%" end
-                local targetParent = prompt.Parent and prompt.Parent.Parent
-                local targetPart = targetParent and (targetParent:IsA("BasePart") and targetParent or targetParent:FindFirstChildWhichIsA("BasePart", true))
+                local targetPart = ShoxStealTargetPart(prompt)
                 if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -2886,7 +2965,7 @@ local function executeSteal(prompt, podName)
                     promptFired = true
                     pcall(function()
                         for _, f in ipairs(data.trigger) do task.spawn(f) end
-                        if prompt then prompt:Fire() end
+                        if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
                     end)
                     break
                 end
@@ -2926,8 +3005,11 @@ function startAutoSteal()
     CONFIG.AUTO_STEAL_ENABLED = true
     stealConnection = RunService.Heartbeat:Connect(function()
         if not Steal.AutoStealEnabled or isStealing then return end
+        -- v1.7.2: kurzer Cooldown zwischen Versuchen (kein Spam pro Frame)
+        local nowS = os.clock()
+        if nowS - (ShoxStealLastTry or 0) < 0.08 then return end
         local p, n = findNearestPrompt()
-        if p then executeSteal(p, n) end
+        if p then ShoxStealLastTry = nowS; executeSteal(p, n) end
     end)
     return true
 end
@@ -3081,16 +3163,24 @@ end
 
 -- v1.6.2: gemeinsame Boden-Erkennung (nur solide Teile, keine Spieler, kein Wasser)
 function ShoxGetGroundHit(char, root)
-    local ignore = {char}
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p.Character and p.Character ~= char then table.insert(ignore, p.Character) end
+    -- v1.7.1: RaycastParams + Ignore-Liste gecacht (vorher jedes Mal neu gebaut)
+    local now = os.clock()
+    if not ShoxGroundParams then
+        ShoxGroundParams = RaycastParams.new()
+        ShoxGroundParams.FilterType = Enum.RaycastFilterType.Exclude
+        ShoxGroundParams.IgnoreWater = true
+        pcall(function() ShoxGroundParams.RespectCanCollide = true end)
+        ShoxGroundChar, ShoxGroundT = nil, 0
     end
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = ignore
-    params.IgnoreWater = true
-    pcall(function() params.RespectCanCollide = true end)
-    return workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), params)
+    if ShoxGroundChar ~= char or now - ShoxGroundT > 1 then
+        ShoxGroundChar, ShoxGroundT = char, now
+        local ignore = {char}
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Character and p.Character ~= char then table.insert(ignore, p.Character) end
+        end
+        ShoxGroundParams.FilterDescendantsInstances = ignore
+    end
+    return workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), ShoxGroundParams)
 end
 
 function ShoxGetStandOffset(humanoid, root)
@@ -3115,13 +3205,13 @@ local function doTpDown()
         local targetY = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
         if root.Position.Y - targetY < 3 then return end -- schon am Boden
 
-        local yaw = select(2, root.CFrame:ToEulerAnglesYXZ())
-        root.CFrame = _CFnew(root.Position.X, targetY, root.Position.Z)
-            * CFrame.Angles(0, yaw, 0)
+        -- v1.7.1: KEIN Movement-Lock mehr (er schaltete die LinearVelocity ab -> Speed-Einbruch).
+        -- Die LV steuert nur X/Z, Y bleibt frei. Rotation und horizontales Tempo bleiben erhalten.
+        local cf = root.CFrame
         local lv = root.AssemblyLinearVelocity
-        root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z) -- v1.7.0: Tempo behalten, nur Fall stoppen
+        root.CFrame = CFrame.new(cf.X, targetY, cf.Z) * cf.Rotation
+        root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
         root.AssemblyAngularVelocity = _V3zero
-        _globalMovementLock = tick() + 0.05 -- v1.7.0: kurz statt 0.3 s (verlangsamte dich)
     end)
     if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
@@ -3134,6 +3224,7 @@ do
     local MIRROR_TP_DOWN_Y         = -7.00
     local mirrorTPPreviousY        = {}
     local mirrorTPLastTeleport     = 0
+    local mirrorTPCharOf           = {}
 
     -- Keep cleanup in the same lexical scope as the per-player history table.
     Players.PlayerRemoving:Connect(function(player)
@@ -3165,8 +3256,11 @@ do
         if root.Position.Y - ty < 3 then return end
         root.CFrame = _CFnew(root.Position.X, ty, root.Position.Z)
                    * CFrame.Angles(0, yaw, 0)
-        root.Velocity = _V3zero
-        pcall(function() root.AssemblyLinearVelocity = _V3zero end)
+        -- v1.7.1: horizontales Tempo behalten (vorher komplett auf 0 -> Stopp)
+        pcall(function()
+            local lv = root.AssemblyLinearVelocity
+            root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
+        end)
     end
 
     RunService.Heartbeat:Connect(function()
@@ -3181,8 +3275,14 @@ do
                 if root then
                     local currentY  = root.Position.Y
                     local previousY = mirrorTPPreviousY[player.UserId]
+                    -- v1.7.1: Respawn/neuer Charakter des Gegners löst keinen falschen TP mehr aus
+                    if mirrorTPCharOf[player.UserId] ~= character then
+                        mirrorTPCharOf[player.UserId] = character
+                        previousY = nil
+                    end
                     if previousY
-                       and previousY - currentY >= MIRROR_TP_DROP_THRESHOLD then
+                       and previousY - currentY >= MIRROR_TP_DROP_THRESHOLD
+                       and root.AssemblyLinearVelocity.Y < -20 then
                         pcall(mirrorTPTeleportDown)
                         table.clear(mirrorTPPreviousY)
                         return
@@ -3516,11 +3616,12 @@ local function startAntiRagdollV2()
                         if obj:IsA("Constraint") then obj.Enabled = true end
                     end
                     workspace.CurrentCamera.CameraSubject = hum
-                    local PM = LP.PlayerScripts:FindFirstChild("PlayerModule")
-                    if PM then
-                        local CM = require(PM:FindFirstChild("ControlModule"))
-                        if CM then CM:Enable() end
+                    if not ShoxCachedCM then
+                        local PM = LP.PlayerScripts:FindFirstChild("PlayerModule")
+                        local cms = PM and PM:FindFirstChild("ControlModule")
+                        if cms then ShoxCachedCM = require(cms) end
                     end
+                    if ShoxCachedCM then ShoxCachedCM:Enable() end
                     hum.AutoRotate = true
                     hum.PlatformStand = false
                     hum.Sit = false
@@ -4124,7 +4225,44 @@ local function getClosestTargetBody()
     return closest
 end
 
-local function _bodyLockTick()
+-- v1.7.2: Body Lock Einstellungen / Carry-Erkennung
+bodyLockOffWhileCarry = true
+bodyLockCarrySetVisual = nil
+ShoxBLTarget = nil
+ShoxBLPickT = 0
+ShoxCarryCache = {t = 0, v = false}
+
+function ShoxIsCarrying()
+    local now = os.clock()
+    if now - ShoxCarryCache.t < 0.1 then return ShoxCarryCache.v end
+    ShoxCarryCache.t = now
+    local v = false
+    local char = LP.Character
+    if LP:GetAttribute("Stealing") == true or (char and char:GetAttribute("Stealing") == true) then
+        v = true
+    elseif char then
+        for _, n in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
+            local m = char:FindFirstChild(n)
+            if m and ((m:IsA("BoolValue") and m.Value == true)
+                or (m:IsA("ObjectValue") and m.Value ~= nil)
+                or (m:IsA("StringValue") and m.Value ~= "")) then
+                v = true
+                break
+            end
+        end
+    end
+    ShoxCarryCache.v = v
+    return v
+end
+
+function _blValidTarget(tRoot)
+    if not tRoot or not tRoot.Parent then return false end
+    local h = tRoot.Parent:FindFirstChildOfClass("Humanoid")
+    return h ~= nil and h.Health > 0
+end
+
+local function _bodyLockTick(dt)
+    dt = dt or 0.016
     local char = LP.Character
     if not char then return end
     local root = char:FindFirstChild("HumanoidRootPart")
@@ -4132,7 +4270,39 @@ local function _bodyLockTick()
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
 
-    local target = getClosestTargetBody()
+    -- Toggle "Auto Off While Carry": Lock pausiert, solange du ein Brainrot traegst
+    if bodyLockOffWhileCarry == true and ShoxIsCarrying() then
+        if not hum.AutoRotate then hum.AutoRotate = true end
+        ShoxBLTarget = nil
+        return
+    end
+
+    -- Nicht gegen Ragdoll/Physik ankaempfen
+    local st = hum:GetState()
+    if hum.PlatformStand or st == Enum.HumanoidStateType.Physics
+       or st == Enum.HumanoidStateType.Ragdoll or st == Enum.HumanoidStateType.FallingDown then
+        return
+    end
+
+    -- Zielwahl mit Hysterese: erst wechseln, wenn ein neues Ziel deutlich naeher ist (kein Flackern)
+    local now = os.clock()
+    local cur = ShoxBLTarget
+    if cur and not _blValidTarget(cur) then cur = nil end
+    if (not cur) or now - ShoxBLPickT > 0.15 then
+        ShoxBLPickT = now
+        local best = getClosestTargetBody()
+        if best and best ~= cur then
+            if not cur then
+                cur = best
+            else
+                local dCur = (cur.Position - root.Position).Magnitude
+                local dBest = (best.Position - root.Position).Magnitude
+                if dBest < dCur * 0.75 then cur = best end
+            end
+        end
+    end
+    ShoxBLTarget = cur
+    local target = cur
     if not target then
         if not hum.AutoRotate then hum.AutoRotate = true end
         return
@@ -4140,30 +4310,35 @@ local function _bodyLockTick()
 
     local offset = target.Position - root.Position
     if offset.Magnitude > bodyLockRange then
+        ShoxBLTarget = nil
         if not hum.AutoRotate then hum.AutoRotate = true end
         return
     end
     if hum.AutoRotate then hum.AutoRotate = false end
 
-    local targetVelocity = target.AssemblyLinearVelocity
-    local speed = math.min(targetVelocity.Magnitude, 55)
-    local smoothedTargetVelocity = targetVelocity.Magnitude > 55 and targetVelocity.Unit * speed or targetVelocity
-    local predictTime = _clamp(smoothedTargetVelocity.Magnitude / 100, 0.06, 0.25)
-    local predicted = target.Position + smoothedTargetVelocity * predictTime
-    local flatTarget = _V3new(predicted.X, root.Position.Y, predicted.Z)
-    local flatDirection = flatTarget - root.Position
-    if flatDirection.Magnitude <= 0.1 then return end
+    -- Vorhersage inkl. halbem Ping, nur horizontal
+    local tv = target.AssemblyLinearVelocity
+    if tv.Magnitude > 55 then tv = tv.Unit * 55 end
+    local predictTime = _clamp(tv.Magnitude / 100, 0.06, 0.25) + math.min(ShoxGetPingSec() * 0.5, 0.08)
+    local px = target.Position.X + tv.X * predictTime
+    local pz = target.Position.Z + tv.Z * predictTime
+    local fx, fz = px - root.Position.X, pz - root.Position.Z
+    if (fx * fx + fz * fz) < 1 then return end -- zu nah: kein Zittern
 
-    -- Rotate on the horizontal plane only; avoid writing AngularVelocity every frame.
-    local goal = CFrame.lookAt(root.Position, flatTarget)
-    root.CFrame = root.CFrame:Lerp(goal, 0.25)
+    -- Weiche Drehung (dt-basiert), nur Yaw
+    local goalYaw = math.atan2(-fx, -fz)
+    local _, curYaw = root.CFrame:ToEulerAnglesYXZ()
+    local dYaw = (goalYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
+    if math.abs(dYaw) < 0.005 then return end
+    local alpha = _clamp(1 - math.exp(-18 * dt), 0.12, 0.6)
+    root.CFrame = CFrame.new(root.Position) * CFrame.Angles(0, curYaw + dYaw * alpha, 0)
 end
 
 function startBodyLock()
     if _bodyLockConn then _bodyLockConn:Disconnect() end
-    _bodyLockConn = RunService.Heartbeat:Connect(function()
+    _bodyLockConn = RunService.Heartbeat:Connect(function(dt)
         if not bodyLockEnabled or _blSuppressCount > 0 then return end
-        local ok, err = xpcall(_bodyLockTick, debug.traceback)
+        local ok, err = xpcall(_bodyLockTick, debug.traceback, dt)
         if not ok then
             warn("[ShoxHub] Body Lock tick recovered: " .. tostring(err))
         end
@@ -5458,7 +5633,11 @@ local function tpBatFollowTarget(root, targetRoot)
     if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
     local pos = tPos + flat * 2.5 + Vector3.new(0, 1.2, 0)
     root.CFrame = CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
-    root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
+    -- v1.7.1: Ziel-Velocity begrenzt übernehmen -> kein Wegschleudern, wenn das Ziel geflingt wird
+    local tv = targetRoot.AssemblyLinearVelocity
+    if tv.Magnitude > 60 then tv = tv.Unit * 60 end
+    root.AssemblyLinearVelocity = tv
+    root.AssemblyAngularVelocity = Vector3.zero
     return true
 end
 
@@ -5476,8 +5655,11 @@ local function tpBatUpdate()
         pcall(function() humanoid:EquipTool(bat) end)
     end
 
-    local target = tpBatClosestPlayer(root)
-    if not target then return end
+    -- v1.7.1: nicht TP-en, während du ein Brainrot trägst
+    if LP:GetAttribute("Stealing") == true or character:GetAttribute("Stealing") == true then return end
+    local target, targetDist = tpBatClosestPlayer(root)
+    -- v1.7.1: Maximalreichweite, kein Teleport quer über die Map
+    if not target or (targetDist and targetDist > 120) then return end
 
     local targetCharacter = target.Character
     local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
@@ -6011,6 +6193,67 @@ function executeDropWithToggle(setVisual)
         while dropActive do task.wait() end
         task.wait(0.1)
         if setVisual then setVisual(false) end
+    end)
+end
+
+-- v1.7.2: "Auto [select] after drop": schaltet nach dem Drop die gewaehlte Funktion ein
+AUTO_AFTER_DROP_OPTIONS = {"Off", "Auto Bat", "TP Bat", "Bat Bypass", "Auto Left", "Auto Right", "Body Lock"}
+autoAfterDrop = autoAfterDrop or "Off"
+autoAfterDropLabel = nil
+
+function ShoxAfterDrop()
+    local sel = autoAfterDrop
+    if not ShoxHubState.Running or sel == nil or sel == "Off" then return end
+    task.wait(0.12)
+    if dropActive then return end
+    pcall(function()
+        if sel == "Auto Bat" then
+            if not autoBatEnabled then
+                enableAutoBat()
+                if autoBatSetVisual then autoBatSetVisual(true) end
+                if mobSetAutoBat then mobSetAutoBat(true) end
+            end
+        elseif sel == "TP Bat" then
+            if not batDesyncTpEnabled then
+                toggleBatDesyncTp()
+                if batDesyncTpSetVisual then batDesyncTpSetVisual(batDesyncTpEnabled) end
+                if mobSetTpBat then mobSetTpBat(batDesyncTpEnabled) end
+            end
+        elseif sel == "Bat Bypass" then
+            if not autoBatV2Enabled then
+                enableBatV2()
+                if autoBatV2SetVisual then autoBatV2SetVisual(true) end
+            end
+        elseif sel == "Auto Left" then
+            if not autoLeftEnabled then
+                autoLeftEnabled = true
+                startAutoLeft()
+                if autoLeftSetVisual then autoLeftSetVisual(true) end
+                if mobSetAutoLeft then mobSetAutoLeft(true) end
+            end
+        elseif sel == "Auto Right" then
+            if not autoRightEnabled then
+                autoRightEnabled = true
+                startAutoRight()
+                if autoRightSetVisual then autoRightSetVisual(true) end
+                if mobSetAutoRight then mobSetAutoRight(true) end
+            end
+        elseif sel == "Body Lock" then
+            if not bodyLockEnabled then
+                bodyLockEnabled = true
+                if _blSuppressCount == 0 then startBodyLock() else _blWasEnabled = true end
+                if bodyLockSetVisual then bodyLockSetVisual(true) end
+            end
+        end
+    end)
+end
+
+do
+    local prevDrop = false
+    RunService.Heartbeat:Connect(function()
+        local cur = (dropActive == true)
+        if prevDrop and not cur then task.spawn(ShoxAfterDrop) end
+        prevDrop = cur
     end)
 end
 
@@ -6687,7 +6930,8 @@ function setupMovementAndIndicators(char)
             end
         end
 
-        if speedLabel then
+        if speedLabel and os.clock() - (ShoxSpeedLblT or 0) > 0.1 then
+            ShoxSpeedLblT = os.clock()
             -- v1.6.0 SH-02 Fix: Zeigt die echte physikalische Velocity
             local v = hrp.AssemblyLinearVelocity
             local s = _sqrt(v.X*v.X + v.Z*v.Z)
@@ -7151,6 +7395,8 @@ function buildConfigTable()
         instaResetFloatingPos = instaResetFloatingPos,
         bodyLockEnabled = bodyLockEnabled,
         bodyLockRange = bodyLockRange,
+        bodyLockOffWhileCarry = bodyLockOffWhileCarry,
+        autoAfterDrop = autoAfterDrop,
         progressBarPos = savedProgressBarPos,
         progressBarScale = progressBarScale,
         lockUI = uiLocked,
@@ -7457,6 +7703,18 @@ function loadAllSettings()
     lk(KB.BatV2, data.batV2Key)
     lk(KB.InstaReset, data.instaResetKey)
     if type(data.mobileButtonPositions) == "table" then savedButtonPositions = data.mobileButtonPositions end
+    do -- v1.7.2: neues Raster (Insta Reset neben Drop): alte Standardpositionen mitziehen
+        local oldOrder = {DropBR=0, TPBat=1, AutoLeft=2, AutoBat=3, AutoRight=4, TpDown=5, Carry=6, Lagger1=7, Lagger2=8}
+        if savedButtonPositions and not savedButtonPositions.InstaReset then
+            for nm, o in pairs(oldOrder) do
+                local sp = savedButtonPositions[nm]
+                if type(sp) == "table" and sp.X == (o % 3) * 68 and sp.Y == math.floor(o / 3) * 68 then
+                    local nx, ny = getDefaultButtonPosition(nm)
+                    savedButtonPositions[nm] = {X = nx, Y = ny}
+                end
+            end
+        end
+    end
     do
         local oldDefaults = {
             AutoLeft = {68, 0}, AutoBat = {0, 78}, AutoRight = {68, 78},
@@ -7486,6 +7744,16 @@ function loadAllSettings()
     if data.bodyLockRange ~= nil then
         bodyLockRange = readNumber(data.bodyLockRange, bodyLockRange or 20, 5, 200)
         if bodyLockRangeBox then bodyLockRangeBox.Text = tostring(bodyLockRange) end
+    end
+    if data.bodyLockOffWhileCarry ~= nil then
+        bodyLockOffWhileCarry = (data.bodyLockOffWhileCarry == true)
+        if bodyLockCarrySetVisual then bodyLockCarrySetVisual(bodyLockOffWhileCarry) end
+    end
+    if type(data.autoAfterDrop) == "string" then
+        local okOpt = false
+        for _, o in ipairs(AUTO_AFTER_DROP_OPTIONS) do if o == data.autoAfterDrop then okOpt = true end end
+        autoAfterDrop = okOpt and data.autoAfterDrop or "Off"
+        if autoAfterDropLabel then autoAfterDropLabel.Text = autoAfterDrop end
     end
     dropMode = (data.dropMode == 2) and 2 or 1
     stretchEnabled = data.stretchEnabled or false
@@ -7646,6 +7914,10 @@ function forceResetUI()
     safeSet(mobSetLagger2, false)
     autoStealVariant = 1
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(1) end
+    bodyLockOffWhileCarry = true
+    if bodyLockCarrySetVisual then bodyLockCarrySetVisual(true) end
+    autoAfterDrop = "Off"
+    if autoAfterDropLabel then autoAfterDropLabel.Text = "Off" end
     tpBatVersion = 1
     _G.__tpBatV2Distance = 8
     minecraftBatSkinEnabled = false
@@ -7820,6 +8092,8 @@ function resetToFactoryDefaults()
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
+        bodyLockOffWhileCarry = true
+        autoAfterDrop = "Off"
         BAT_AIMBOT_SPEED = 50
         dropMode = 1
         stretchEnabled = false
@@ -7929,8 +8203,8 @@ function getDefaultButtonPosition(btnName)
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
     local orderMap = {
-        DropBR = 0, TPBat = 1, AutoLeft = 2, AutoBat = 3, AutoRight = 4,
-        TpDown = 5, Carry = 6, Lagger1 = 7, Lagger2 = 8
+        DropBR = 0, InstaReset = 1, TPBat = 2, AutoLeft = 3, AutoBat = 4, AutoRight = 5,
+        TpDown = 6, Carry = 7, Lagger1 = 8, Lagger2 = 9
     }
     local order = orderMap[btnName] or 0
     local row = _floor(order / 3)
@@ -7981,6 +8255,7 @@ function _G.AmbitiousApplyMobileButtonsHidden()
                         AutoLeft  = "autoLeft",
                         AutoRight = "autoRight",
                         DropBR    = "drop",
+                        InstaReset = "instaReset",
                         Carry     = "carry",
                         Lagger1   = "laggerNormal",
                         Lagger2   = "laggerCarry",
@@ -8162,7 +8437,7 @@ function buildGui()
     local WHITE = Color3.fromRGB(255,255,255)
     local GRAY = Color3.fromRGB(60,60,60)
     local INP = Color3.fromRGB(15,15,15)
-    local OFF = Color3.fromRGB(25,25,30)
+    local OFF = Color3.fromRGB(26, 26, 26)
     local TAB_ACTIVE = SILVER
     local TAB_INACT = SILVER_DARK
     local SECT_LBL = SILVER
@@ -8189,11 +8464,17 @@ function buildGui()
     main = Instance.new("Frame", gui)
     main.Size = UDim2.new(0, GUI_W, 0, GUI_H)
     main.Position = UDim2.new(0, 20, 0, 2)
-    main.BackgroundColor3 = Color3.fromRGB(5, 5, 8)
+    main.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
     main.BackgroundTransparency = 0
     main.BorderSizePixel = 0
     main.ClipsDescendants = true
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 18)
+    do -- v1.7.2: dezenter Fensterrahmen (neutral)
+        local mainStroke = Instance.new("UIStroke", main)
+        mainStroke.Color = Color3.fromRGB(55, 55, 55)
+        mainStroke.Thickness = 1.2
+        mainStroke.Transparency = 0.2
+    end
 
     backgroundImage = Instance.new("ImageLabel", main)
     backgroundImage.Name = "BackgroundImage"
@@ -8224,7 +8505,7 @@ function buildGui()
     titleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     titleImage.BackgroundTransparency = 1
     titleImage.Text = "SHOX"
-    titleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
+    titleImage.TextColor3 = Color3.fromRGB(246, 246, 246)
     titleImage.Font = SHOX_UI_FONT
     titleImage.TextScaled = true
     titleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -8237,7 +8518,7 @@ function buildGui()
     local closeBtn = Instance.new("TextButton", main)
     closeBtn.Size = UDim2.new(0, 32, 0, 32)
     closeBtn.Position = UDim2.new(1, -42, 0, 8)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(30,30,35)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
     closeBtn.BackgroundTransparency = 0.6
     closeBtn.BorderSizePixel = 0
     closeBtn.Text = "−"
@@ -8249,10 +8530,10 @@ function buildGui()
     Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
 
     closeBtn.MouseEnter:Connect(function()
-        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = Color3.fromRGB(20,20,24), BackgroundColor3 = getThemeColor()}):Play()
+        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = Color3.fromRGB(20, 20, 20), BackgroundColor3 = getThemeColor()}):Play()
     end)
     closeBtn.MouseLeave:Connect(function()
-        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(30,30,35)}):Play()
+        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(31, 31, 31)}):Play()
     end)
 
     miniBtn = Instance.new("TextButton", gui)
@@ -8263,7 +8544,7 @@ function buildGui()
     miniBtn.BorderSizePixel = 0
     miniBtn.ClipsDescendants = true
     miniBtn.Text = ""
-    miniBtn.TextColor3 = Color3.fromRGB(210, 210, 220)
+    miniBtn.TextColor3 = Color3.fromRGB(211, 211, 211)
     miniBtn.Font = SHOX_UI_FONT
     miniBtn.TextSize = 16
     miniBtn.ZIndex = 20
@@ -8277,7 +8558,7 @@ function buildGui()
     miniTitleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     miniTitleImage.BackgroundTransparency = 1
     miniTitleImage.Text = "SHOX"
-    miniTitleImage.TextColor3 = Color3.fromRGB(245, 245, 250)
+    miniTitleImage.TextColor3 = Color3.fromRGB(246, 246, 246)
     miniTitleImage.Font = SHOX_UI_FONT
     miniTitleImage.TextScaled = true
     miniTitleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
@@ -8385,7 +8666,7 @@ function buildGui()
     for i, name in ipairs(tabs) do
         local btn = Instance.new("TextButton", tabBar)
         btn.Size = UDim2.new(0.19, 0, 1, -6)
-        btn.BackgroundColor3 = Color3.fromRGB(18,18,22)
+        btn.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
         btn.BackgroundTransparency = 0.35
         btn.BorderSizePixel = 0
         btn.Text = name
@@ -8407,7 +8688,7 @@ function buildGui()
         page.BorderSizePixel = 0
         page.ClipsDescendants = true
         page.ScrollBarThickness = 2
-        page.ScrollBarImageColor3 = Color3.fromRGB(30,30,35)
+        page.ScrollBarImageColor3 = Color3.fromRGB(31, 31, 31)
         page.ScrollBarImageTransparency = 0.3
         page.CanvasSize = UDim2.new(0, 0, 0, 0)
         page.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -8434,10 +8715,14 @@ function buildGui()
             page.Visible = true
             for _, b in ipairs(tabButtons) do
                 b.TextColor3 = TAB_INACT
-                b.BackgroundColor3 = Color3.fromRGB(18,18,22)
+                b.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+                local st = b:FindFirstChildOfClass("UIStroke")
+                if st then st.Color = ROW_BORDER; st.Thickness = 1 end
             end
             btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            btn.BackgroundColor3 = Color3.fromRGB(30,30,35)
+            btn.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
+            local ast = btn:FindFirstChildOfClass("UIStroke")
+            if ast then ast.Color = WHITE; ast.Thickness = 1.5 end
         end)
 
         table.insert(tabButtons, btn)
@@ -8445,7 +8730,9 @@ function buildGui()
 
     if tabButtons[1] then
         tabButtons[1].TextColor3 = Color3.fromRGB(255, 255, 255)
-        tabButtons[1].BackgroundColor3 = Color3.fromRGB(30,30,35)
+        tabButtons[1].BackgroundColor3 = Color3.fromRGB(31, 31, 31)
+        local ast1 = tabButtons[1]:FindFirstChildOfClass("UIStroke")
+        if ast1 then ast1.Color = WHITE; ast1.Thickness = 1.5 end
     end
 
     local pageCounters = {}
@@ -8468,7 +8755,7 @@ function buildGui()
         l.Position = UDim2.new(0, 8, 0, 0)
         l.BackgroundTransparency = 1
         l.Text = txt:upper()
-        l.TextColor3 = Color3.fromRGB(230, 230, 235)
+        l.TextColor3 = Color3.fromRGB(231, 231, 231)
         l.Font = SHOX_UI_FONT
         l.TextSize = 15
         l.TextXAlignment = Enum.TextXAlignment.Left
@@ -8478,7 +8765,7 @@ function buildGui()
         local line = Instance.new("Frame", f)
         line.Size = UDim2.new(1, -24, 0, 1.5)
         line.Position = UDim2.new(0, 12, 1, -4)
-        line.BackgroundColor3 = Color3.fromRGB(200, 200, 210)
+        line.BackgroundColor3 = Color3.fromRGB(201, 201, 201)
         line.BackgroundTransparency = 0.6
         line.BorderSizePixel = 0
         line.ZIndex = 8
@@ -8513,7 +8800,7 @@ function buildGui()
         l.Position = UDim2.new(0, 10, 0, 0)
         l.BackgroundTransparency = 1
         l.Text = txt
-        l.TextColor3 = Color3.fromRGB(235, 235, 240)
+        l.TextColor3 = Color3.fromRGB(236, 236, 236)
         l.Font = SHOX_UI_FONT
         l.TextSize = 11
         l.TextXAlignment = Enum.TextXAlignment.Left
@@ -8546,7 +8833,7 @@ function buildGui()
         dot.Size = UDim2.new(0, 13, 0, 13)
         dot.AnchorPoint = Vector2.new(0, 0)
         dot.Position = UDim2.new(0, 3, 0.5, -6)
-        dot.BackgroundColor3 = Color3.fromRGB(18,18,22)
+        dot.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
         dot.BorderSizePixel = 0
         dot.ZIndex = 9
         Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
@@ -8570,7 +8857,7 @@ function buildGui()
         local info = TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         TS:Create(dot, info, {
             Position = on and UDim2.new(1, -16, 0.5, -6) or UDim2.new(0, 3, 0.5, -6),
-            BackgroundColor3 = on and Color3.fromRGB(255,255,255) or Color3.fromRGB(18,18,22),
+            BackgroundColor3 = on and Color3.fromRGB(255,255,255) or Color3.fromRGB(18, 18, 18),
         }):Play()
         TS:Create(pill, info, {
             BackgroundColor3 = on and c or Color3.fromRGB(255,255,255),
@@ -8833,7 +9120,7 @@ function buildGui()
         local container = Instance.new("Frame", parent)
         container.Size = UDim2.new(0, 175, 0, 30)
         container.Position = UDim2.new(1, -183, 0.5, -15)
-        container.BackgroundColor3 = Color3.fromRGB(18,18,22)
+        container.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
         container.BackgroundTransparency = 0.35
         container.BorderSizePixel = 0
         container.ZIndex = 8
@@ -8847,7 +9134,7 @@ function buildGui()
         local glow = Instance.new("Frame", container)
         glow.Size = UDim2.new(0, 3, 0.55, 0)
         glow.Position = UDim2.new(0, 6, 0.225, 0)
-        glow.BackgroundColor3 = Color3.fromRGB(220, 220, 230)
+        glow.BackgroundColor3 = Color3.fromRGB(221, 221, 221)
         glow.BorderSizePixel = 0
         glow.ZIndex = 9
         Instance.new("UICorner", glow).CornerRadius = UDim.new(1, 0)
@@ -8882,7 +9169,7 @@ function buildGui()
         for i = 1, dotCount do
             local d = Instance.new("Frame", dotsRow)
             d.Size = UDim2.new(0, 5, 0, 5)
-            d.BackgroundColor3 = Color3.fromRGB(150, 150, 160)
+            d.BackgroundColor3 = Color3.fromRGB(151, 151, 151)
             d.BorderSizePixel = 0
             d.ZIndex = 10
             Instance.new("UICorner", d).CornerRadius = UDim.new(1, 0)
@@ -8914,7 +9201,7 @@ function buildGui()
             local activeDot = (#options <= MAX_DOTS) and currentIdx or math.clamp(math.floor(((currentIdx - 1) / math.max(#options - 1, 1)) * (dotCount - 1) + 1.5), 1, dotCount)
             for i, d in ipairs(dots) do
                 local active = (i == activeDot)
-                d.BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 160)
+                d.BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(151, 151, 151)
                 d.Size = active and UDim2.new(0, 10, 0, 5) or UDim2.new(0, 5, 0, 5)
             end
         end
@@ -8924,7 +9211,7 @@ function buildGui()
             for i, d in ipairs(dots) do
                 local active = (i == activeDot)
                 TS:Create(d, TweenInfo.new(0.22, Enum.EasingStyle.Quad), {
-                    BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(150, 150, 160),
+                    BackgroundColor3 = active and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(151, 151, 151),
                     Size = active and UDim2.new(0, 10, 0, 5) or UDim2.new(0, 5, 0, 5),
                 }):Play()
             end
@@ -8959,7 +9246,7 @@ function buildGui()
         rightZone.MouseButton1Click:Connect(function() step(1) end)
 
         container.MouseEnter:Connect(function()
-            TS:Create(contStroke, TweenInfo.new(0.12), {Color = Color3.fromRGB(220, 220, 230), Transparency = 0}):Play()
+            TS:Create(contStroke, TweenInfo.new(0.12), {Color = Color3.fromRGB(221, 221, 221), Transparency = 0}):Play()
             TS:Create(glow, TweenInfo.new(0.12), {Size = UDim2.new(0, 4, 0.7, 0)}):Play()
         end)
         container.MouseLeave:Connect(function()
@@ -9131,7 +9418,7 @@ function buildGui()
         actLbl.Position = UDim2.new(1, -78, 0, 0)
         actLbl.BackgroundTransparency = 1
         actLbl.Text = "ACTIVATE"
-        actLbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+        actLbl.TextColor3 = Color3.fromRGB(231, 231, 231)
         actLbl.Font = SHOX_UI_FONT
         actLbl.TextSize = 9
         actLbl.TextXAlignment = Enum.TextXAlignment.Right
@@ -9264,7 +9551,23 @@ function buildGui()
             if v and v > 0 then
                 bodyLockRange = _clamp(_floor(v), 5, 200)
                 if bodyLockRangeBox then bodyLockRangeBox.Text = tostring(bodyLockRange) end
+                saveAllSettings()
             end
+        end)
+    end
+
+    bodyLockCarrySetVisual = mkToggle(combatPage, "Auto Off While Carry", function(on)
+        bodyLockOffWhileCarry = on
+        saveAllSettings()
+    end)
+    if bodyLockCarrySetVisual then bodyLockCarrySetVisual(bodyLockOffWhileCarry == true) end
+
+    do
+        local row = mkRow(combatPage, 38)
+        mkLabel(row, "Auto After Drop")
+        autoAfterDropLabel = mkNeoSelector(row, autoAfterDrop, AUTO_AFTER_DROP_OPTIONS, function(selected)
+            autoAfterDrop = selected
+            saveAllSettings()
         end)
     end
 
@@ -9513,7 +9816,7 @@ function buildGui()
         previewFrame.Name = "BackgroundPreview"
         previewFrame.Size = UDim2.new(0, 56, 0, 44)
         previewFrame.Position = UDim2.new(1, -250, 0.5, -22)
-        previewFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+        previewFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
         previewFrame.BackgroundTransparency = 0.15
         previewFrame.BorderSizePixel = 0
         previewFrame.ClipsDescendants = true
@@ -9540,7 +9843,7 @@ function buildGui()
         previewPlaceholder.Size = UDim2.new(1, 0, 1, 0)
         previewPlaceholder.BackgroundTransparency = 1
         previewPlaceholder.Text = "OFF"
-        previewPlaceholder.TextColor3 = Color3.fromRGB(160, 160, 170)
+        previewPlaceholder.TextColor3 = Color3.fromRGB(161, 161, 161)
         previewPlaceholder.Font = SHOX_UI_FONT
         previewPlaceholder.TextSize = 12
         previewPlaceholder.ZIndex = 10
@@ -9626,7 +9929,7 @@ function buildGui()
         info.Font = SHOX_UI_FONT
         info.TextSize = 11
         info.TextXAlignment = Enum.TextXAlignment.Right
-        info.TextColor3 = Color3.fromRGB(170, 205, 235)
+        info.TextColor3 = Color3.fromRGB(198, 198, 198)
         info.Text = "SHOXHUB animation"
     end
 
@@ -9752,7 +10055,7 @@ function buildGui()
             local lbl = Instance.new("TextLabel", r)
             lbl.BackgroundTransparency = 1
             lbl.Text = item.label
-            lbl.TextColor3 = Color3.fromRGB(235, 235, 240)
+            lbl.TextColor3 = Color3.fromRGB(236, 236, 236)
             lbl.Font = SHOX_UI_FONT
             lbl.TextSize = 11
             lbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -9782,7 +10085,7 @@ function buildGui()
             dot.Size = UDim2.new(0, 13, 0, 13)
             dot.AnchorPoint = Vector2.new(0, 0)
             dot.Position = startOn and UDim2.new(1, -16, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
-            dot.BackgroundColor3 = startOn and Color3.fromRGB(255,255,255) or Color3.fromRGB(18,18,22)
+            dot.BackgroundColor3 = startOn and Color3.fromRGB(255,255,255) or Color3.fromRGB(18, 18, 18)
             dot.BorderSizePixel = 0
             dot.ZIndex = 9
             Instance.new("UICorner", dot).CornerRadius = UDim.new(1, 0)
@@ -9807,7 +10110,7 @@ function buildGui()
         arrowBtn.Position = UDim2.new(1, -38, 0.5, -12)
         arrowBtn.BackgroundColor3 = Color3.fromRGB(15,15,15)
         arrowBtn.Text = "▼"
-        arrowBtn.TextColor3 = Color3.fromRGB(220,220,230)
+        arrowBtn.TextColor3 = Color3.fromRGB(221, 221, 221)
         arrowBtn.Font = SHOX_UI_FONT
         arrowBtn.TextSize = 14
         arrowBtn.AutoButtonColor = false
@@ -9913,8 +10216,8 @@ function buildGui()
         local resetGrad = Instance.new("UIGradient", resetPosBtn)
         resetGrad.Rotation = 90
         resetGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(65, 95, 35)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(18, 25, 14)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(79, 79, 79)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(22, 22, 22)),
         })
 
         local resetStroke = Instance.new("UIStroke", resetPosBtn)
@@ -9979,13 +10282,13 @@ function buildGui()
         local delGrad = Instance.new("UIGradient", delBtn)
         delGrad.Rotation = 90
         delGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(180, 45, 80)),
-            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(120, 25, 55)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(60, 10, 30)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(89, 89, 89)),
+            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(57, 57, 57)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(27, 27, 27)),
         })
 
         local delStroke = Instance.new("UIStroke", delBtn)
-        delStroke.Color = Color3.fromRGB(255, 130, 170)
+        delStroke.Color = Color3.fromRGB(172, 172, 172)
         delStroke.Thickness = 1.5
         delStroke.Transparency = 0.35
 
@@ -10024,18 +10327,18 @@ function buildGui()
                 deleteState = 1
                 delLbl.Text = "CONFIRM?"
                 delGrad.Color = ColorSequence.new({
-                    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(230, 70, 100)),
-                    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(180, 40, 70)),
-                    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(90, 15, 40)),
+                    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(121, 121, 121)),
+                    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(85, 85, 85)),
+                    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(40, 40, 40)),
                 })
                 task.delay(2, function()
                     if delBtn and delBtn.Parent and deleteState == 1 then
                         deleteState = 0
                         delLbl.Text = originalDeleteText
                         delGrad.Color = ColorSequence.new({
-                            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(180, 45, 80)),
-                            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(120, 25, 55)),
-                            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(60, 10, 30)),
+                            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(89, 89, 89)),
+                            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(57, 57, 57)),
+                            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(27, 27, 27)),
                         })
                     end
                 end)
@@ -10048,9 +10351,9 @@ function buildGui()
                     if delLbl and delLbl.Parent then
                         delLbl.Text = originalDeleteText
                         delGrad.Color = ColorSequence.new({
-                            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(180, 45, 80)),
-                            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(120, 25, 55)),
-                            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(60, 10, 30)),
+                            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(89, 89, 89)),
+                            ColorSequenceKeypoint.new(0.50, Color3.fromRGB(57, 57, 57)),
+                            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(27, 27, 27)),
                         })
                         delDebounce = false
                     end
@@ -10083,7 +10386,7 @@ function buildGui()
     pbFrame = Instance.new("Frame", gui)
     pbFrame.Size = UDim2.new(0, 236, 0, 46)
     pbFrame.Position = UDim2.new(0.5, -118, 0, 56)
-    pbFrame.BackgroundColor3 = Color3.fromRGB(12,12,18)
+    pbFrame.BackgroundColor3 = Color3.fromRGB(13, 13, 13)
     pbFrame.BackgroundTransparency = 0.08
     pbFrame.BorderSizePixel = 0
     pbFrame.Active = true
@@ -10130,7 +10433,7 @@ function buildGui()
     fpsNeon.Position = UDim2.new(0, 12, 0, 4)
     fpsNeon.BackgroundTransparency = 1
     fpsNeon.Text = "--FPS · --ms"
-    fpsNeon.TextColor3 = Color3.fromRGB(210, 210, 220)
+    fpsNeon.TextColor3 = Color3.fromRGB(211, 211, 211)
     fpsNeon.Font = SHOX_UI_FONT
     fpsNeon.TextSize = 10
     fpsNeon.TextXAlignment = Enum.TextXAlignment.Left
@@ -10147,7 +10450,7 @@ function buildGui()
     local fillRegion = Instance.new("Frame", progressRow)
     fillRegion.Name = "FillRegion"
     fillRegion.Size = UDim2.new(1, 0, 1, 0)
-    fillRegion.BackgroundColor3 = Color3.fromRGB(20,20,25)
+    fillRegion.BackgroundColor3 = Color3.fromRGB(21, 21, 21)
     fillRegion.BackgroundTransparency = 0.25
     fillRegion.BorderSizePixel = 0
     fillRegion.ClipsDescendants = true
@@ -10157,16 +10460,16 @@ function buildGui()
     progressFill = Instance.new("Frame", fillRegion)
     progressFill.Size = UDim2.new(0, 0, 1, 0)
     progressFill.Position = UDim2.new(0, 0, 0, 0)
-    progressFill.BackgroundColor3 = Color3.fromRGB(210, 210, 220)
+    progressFill.BackgroundColor3 = Color3.fromRGB(211, 211, 211)
     progressFill.BorderSizePixel = 0
     progressFill.ZIndex = 13
     Instance.new("UICorner", progressFill).CornerRadius = UDim.new(0, 7)
 
     local fillGrad = Instance.new("UIGradient", progressFill)
     fillGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(150, 150, 160)),
-        ColorSequenceKeypoint.new(0.50, Color3.fromRGB(210, 210, 220)),
-        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(230, 230, 235)),
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(151, 151, 151)),
+        ColorSequenceKeypoint.new(0.50, Color3.fromRGB(211, 211, 211)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(231, 231, 231)),
     })
     fillGrad.Rotation = 0
 
@@ -10229,7 +10532,7 @@ function createMobilePanel()
     local BTN_W, BTN_H = 60, 60
     local GAP = 8
     local COLUMNS = 3
-    local ROWS = 3
+    local ROWS = 4
     local PANEL_W = BTN_W * COLUMNS + GAP * (COLUMNS - 1)
     local PANEL_H = BTN_H * ROWS + GAP * (ROWS - 1)
 
@@ -10263,11 +10566,11 @@ function createMobilePanel()
     btnContainer.ClipsDescendants = false
 
     local WHITE = Color3.fromRGB(255, 255, 255)
-    local INACTIVE_BG = Color3.fromRGB(8,8,10)
+    local INACTIVE_BG = Color3.fromRGB(8, 8, 8)
 
     local buttons = {}
-    local buttonNames = {"DropBR", "TPBat", "AutoLeft", "AutoBat", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
-    local buttonTexts = {"DROP\nBR", "TP\nBAT", "AUTO\nLEFT", "BAT\nAIMBOT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
+    local buttonNames = {"DropBR", "InstaReset", "TPBat", "AutoLeft", "AutoBat", "AutoRight", "TpDown", "Carry", "Lagger1", "Lagger2"}
+    local buttonTexts = {"DROP\nBR", "INSTA\nRESET", "TP\nBAT", "AUTO\nLEFT", "BAT\nAIMBOT", "AUTO\nRIGHT", "TP\nDOWN", "CARRY\nSPD", "LAGGER\nNORMAL", "LAGGER\nCARRY"}
 
     local function createButton(name, text, order, isToggle, callback)
         local btn = Instance.new("TextButton", btnContainer)
@@ -10294,14 +10597,14 @@ function createMobilePanel()
         bgGrad.Name = "BtnGrad"
         bgGrad.Rotation = 90
         bgGrad.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(70, 70, 78)),
-            ColorSequenceKeypoint.new(0.35, Color3.fromRGB(28, 28, 34)),
-            ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 14)),
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
+            ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
+            ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
             ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
         })
 
         local stroke = Instance.new("UIStroke", btn)
-        stroke.Color = Color3.fromRGB(70,70,78)
+        stroke.Color = Color3.fromRGB(71, 71, 71)
         stroke.Thickness = 1
         stroke.Transparency = 0.45
         stroke.Name = "NormalStroke"
@@ -10422,6 +10725,12 @@ function createMobilePanel()
                 executeDropWithToggle(function(v)
                     if dropBrainrotSetVisual then dropBrainrotSetVisual(v) end
                 end)
+                task.delay(0.3, function() setActive(false) end)
+            end
+        elseif name == "InstaReset" then
+            callback = function(setActive)
+                setActive(true)
+                if _G.InstaReset and _G.InstaReset.Trigger then pcall(_G.InstaReset.Trigger) end
                 task.delay(0.3, function() setActive(false) end)
             end
         elseif name == "TPBat" then
@@ -10588,7 +10897,7 @@ function createBatV2FloatingButton()
     else
         btnFrame.Position = UDim2.new(0.5, -50, 0, 10)
     end
-    btnFrame.BackgroundColor3 = Color3.fromRGB(8,8,10)
+    btnFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
     btnFrame.BackgroundTransparency = 0
     btnFrame.BorderSizePixel = 0
     btnFrame.ZIndex = 20
@@ -10598,14 +10907,14 @@ function createBatV2FloatingButton()
     bgGrad.Name = "BtnGrad"
     bgGrad.Rotation = 90
     bgGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(70, 70, 78)),
-        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(28, 28, 34)),
-        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 14)),
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
+        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
+        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
         ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
     })
 
     local stroke = Instance.new("UIStroke", btnFrame)
-    stroke.Color = Color3.fromRGB(70,70,78)
+    stroke.Color = Color3.fromRGB(71, 71, 71)
     stroke.Thickness = 1
     stroke.Transparency = 0.45
     local label = Instance.new("TextLabel", btnFrame)
@@ -10688,7 +10997,7 @@ function createInstaResetFloatingButton()
     else
         btnFrame.Position = UDim2.new(0.5, 90, 0, 10)
     end
-    btnFrame.BackgroundColor3 = Color3.fromRGB(8,8,10)
+    btnFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
     btnFrame.BorderSizePixel  = 0
     btnFrame.ZIndex           = 20
     Instance.new("UICorner", btnFrame).CornerRadius = UDim.new(0, 10)
@@ -10697,14 +11006,14 @@ function createInstaResetFloatingButton()
     bgGrad.Name = "BtnGrad"
     bgGrad.Rotation = 90
     bgGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(70, 70, 78)),
-        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(28, 28, 34)),
-        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 14)),
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
+        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
+        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
         ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
     })
 
     local stroke = Instance.new("UIStroke", btnFrame)
-    stroke.Color = Color3.fromRGB(70,70,78)
+    stroke.Color = Color3.fromRGB(71, 71, 71)
     stroke.Thickness = 1
     stroke.Transparency = 0.45
 
@@ -11071,7 +11380,14 @@ RunService.Heartbeat:Connect(function()
     local ShoxHubCharacter = LP.Character
     local ShoxHubRoot = ShoxHubCharacter and ShoxHubCharacter:FindFirstChild("HumanoidRootPart")
     local ShoxHubHumanoid = ShoxHubCharacter and ShoxHubCharacter:FindFirstChildOfClass("Humanoid")
-    if ShoxHubRoot and ShoxHubHumanoid and ShoxHubHumanoid.FloorMaterial == Enum.Material.Air and os.clock() - ShoxHubAutoTPLastAt >= 0.35 then
+    -- v1.7.1: nur bei echtem Fall (Velocity.Y), nicht während Bat/TP-Bat/Ragdoll
+    if ShoxHubRoot and ShoxHubHumanoid and ShoxHubHumanoid.FloorMaterial == Enum.Material.Air
+        and os.clock() - ShoxHubAutoTPLastAt >= 0.35
+        and ShoxHubRoot.AssemblyLinearVelocity.Y < -25
+        and not (autoBatEnabled == true or autoBatV2Enabled == true or batDesyncTpEnabled == true)
+        and ShoxHubHumanoid:GetState() ~= Enum.HumanoidStateType.Physics
+        and ShoxHubHumanoid:GetState() ~= Enum.HumanoidStateType.Ragdoll
+        and ShoxHubHumanoid:GetState() ~= Enum.HumanoidStateType.FallingDown then
         local hit = ShoxGetGroundHit(ShoxHubCharacter, ShoxHubRoot)
         local groundY = hit and hit.Position.Y or ShoxHubRoot.Position.Y -- SH-13 Fix
         local heightAboveGround = ShoxHubRoot.Position.Y - groundY
