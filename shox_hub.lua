@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.8.0"
+ShoxHubState.Version     = "v1.9.0"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -2108,7 +2108,7 @@ local autoGrabStopEnabled = true
 
 autoStealVariant = 1
 
-AUTO_STEAL_VARIANT_NAMES = { "Normal", "Semi", "Semi Normal" }
+AUTO_STEAL_VARIANT_NAMES = { "Normal", "Semi", "Semi Normal", "Full Auto" }
 
 local function autoStealVariantName(n)
     n = _clamp(tonumber(n) or 1, 1, #AUTO_STEAL_VARIANT_NAMES)
@@ -2206,8 +2206,8 @@ local function findNearestPrompt()
     local nearestPrompt, nearestDist, nearestName = nil, _huge, nil
     local rpos = root.Position
     local cached = _nearestPromptCache
-    if cached.valid and cached.position and _tick() - cached.time < 0.05
-       and (rpos - cached.position).Magnitude < 3 then
+    if cached.valid and cached.position and _tick() - cached.time < 0.12
+       and (rpos - cached.position).Magnitude < 4 then
         if cached.prompt and cached.prompt.Parent then
             return cached.prompt, cached.name
         elseif cached.prompt == nil then
@@ -2309,11 +2309,11 @@ local function executeSteal(prompt, podName)
         local duration = Steal.StealDuration
         -- v1.7.2: echte Hold-Dauer des Prompts nutzen (alle 3 Versionen skalieren damit)
         local hd = prompt.HoldDuration
-        if type(hd) == "number" and hd >= 0.1 and hd <= 5 then duration = hd end
+        if type(hd) == "number" and hd >= 0.3 and hd <= 3 then duration = hd end
         local stopTime = getAutoGrabStopTime(duration)
         local promptFired = false
         -- Normal (1) = durchgehender Hold ohne Pause; Semi (2) / Semi Normal (3) pausieren vor dem Ende
-        if autoGrabStopEnabled and autoStealVariant ~= 1 then
+        if autoGrabStopEnabled and autoStealVariant ~= 1 and autoStealVariant ~= 4 then
             while isStealing and Steal.AutoStealEnabled do
                 local elapsed = _tick() - startTime
                 if elapsed >= stopTime then break end
@@ -2331,8 +2331,8 @@ local function executeSteal(prompt, podName)
             if progressFill then progressFill.Size = UDim2.new(stopProgress, 0, 1, 0) end
             if progressPct then progressPct.Text = _floor(stopProgress * 100) .. "%" end
             local phase2Timeout = math.max(2.99 - stopTime - math.max(duration - stopTime, 0), 0.05)
-            if phase2Timeout > 2 then phase2Timeout = 2 end
-            if autoStealVariant == 3 then phase2Timeout = 0.45 end
+            if phase2Timeout > 5 then phase2Timeout = 5 end
+            if autoStealVariant == 3 then phase2Timeout = 0.6 end
             local phase2Start = _tick()
             while isStealing and Steal.AutoStealEnabled do
                 if _tick() - phase2Start >= phase2Timeout then
@@ -2375,8 +2375,7 @@ local function executeSteal(prompt, podName)
             end
             if isStealing and Steal.AutoStealEnabled then
                 local fillStart = _tick()
-                -- v1.8.0: schon gewartete Zeit zaehlt zur Hold-Dauer (Hold lief seit t=0) -> nicht nochmal komplett fuellen
-                local fillDuration = math.max(duration - stopTime - (fillStart - phase2Start), 0.05)
+                local fillDuration = math.max(duration - stopTime, 0.05)
                 while true do
                     local fp = _clamp((_tick() - fillStart) / fillDuration, 0, 1)
                     local totalProgress = stopProgress + fp * (1 - stopProgress)
@@ -2404,7 +2403,8 @@ local function executeSteal(prompt, podName)
                 if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius then break end
+                -- Full Auto (4): +4 Studs Toleranz, weil der Avatar beim Hold noch laeuft
+                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius + (autoStealVariant == 4 and 4 or 0) then break end
                 if elapsed >= duration and not promptFired then
                     promptFired = true
                     if ShoxMarkStealStart then ShoxMarkStealStart() end
@@ -2453,7 +2453,7 @@ function startAutoSteal()
         if ShoxIsCarrying and ShoxIsCarrying() then return end -- v1.7.3: nichts versuchen, waehrend du traegst
         -- v1.7.2: kurzer Cooldown zwischen Versuchen (kein Spam pro Frame)
         local nowS = os.clock()
-        if nowS - (ShoxStealLastTry or 0) < 0.03 then return end
+        if nowS - (ShoxStealLastTry or 0) < (autoStealVariant == 4 and 0.04 or 0.08) then return end
         local p, n = findNearestPrompt()
         if p then ShoxStealLastTry = nowS; executeSteal(p, n) end
     end)
@@ -2651,10 +2651,17 @@ function doTpDown(force)
         end
         local pos = root.Position
         local _, yaw = root.CFrame:ToEulerAnglesYXZ()
-        if _G.ShoxATPDebug then
-            warn(string.format("[ShoxATP] TP von Y=%.2f -> Y=%.2f (%s)", pos.Y, ShoxTPDownGroundY, force == true and "manuell" or "auto"))
+        -- v1.9.0: echte Bodenhoehe per Raycast + Standhoehe (fixes -7.00 kann UNTER dem Boden liegen = Kollision/Bremsen)
+        local ty = ShoxTPDownGroundY
+        local okG, hit = pcall(ShoxGetGroundHit, char, root)
+        if okG and hit and hit.Position then
+            ty = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
         end
-        root.CFrame = CFrame.new(pos.X, ShoxTPDownGroundY, pos.Z) * CFrame.Angles(0, yaw, 0)
+        if ty >= pos.Y - 0.5 then return end
+        if _G.ShoxATPDebug then
+            warn(string.format("[ShoxATP] TP von Y=%.2f -> Y=%.2f (%s, ray=%s)", pos.Y, ty, force == true and "manuell" or "auto", tostring(okG and hit ~= nil)))
+        end
+        root.CFrame = CFrame.new(pos.X, ty, pos.Z) * CFrame.Angles(0, yaw, 0)
         -- horizontales Tempo bleibt (sonst Speed-Einbruch, die Speed-Systeme setzen X/Z ohnehin jeden Frame neu)
         local lv = root.AssemblyLinearVelocity
         root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
@@ -4097,6 +4104,83 @@ function ShoxAPReached(key, root, tgt, dt, spd)
     return false
 end
 
+-- v1.9.0: FULL-Modus. Nach L2/R2 zurueck ueber den Ausgang (L1/R1) und die Gasse zur Gegenseite,
+-- mit Stuck-Erkennung (0.5s): 1x Springen, 2x seitlich ausweichen, 3x Wegpunkt ueberspringen.
+ShoxAutoFull = false
+function ShoxAPFullReturn(side)
+    local isL = side == "L"
+    local list = isL and {AP.L1, AP.R1, AP.R2} or {AP.R1, AP.L1, AP.L2}
+    local face = isL and AP.R_FACE or AP.L_FACE
+    local idx, stuckN, lastPos, lastT, sideUntil, sideSign = 1, 0, nil, os.clock(), 0, 1
+    local startedAt = os.clock()
+    local tmpSteal = false
+    if Steal and not Steal.AutoStealEnabled then
+        tmpSteal = pcall(startAutoSteal)
+    end
+    table.clear(ShoxAPDist)
+    local conn
+    local function finish()
+        if tmpSteal then pcall(stopAutoSteal) end
+        if isL then stopAutoLeft() else stopAutoRight() end
+        local ch = LP.Character
+        local rt = ch and ch:FindFirstChild("HumanoidRootPart")
+        if rt then
+            local fp = _V3new(face.X, rt.Position.Y, face.Z)
+            if (fp - rt.Position).Magnitude > 0.01 then rt.CFrame = _CFnew(rt.Position, fp) end
+        end
+    end
+    conn = RunService.Heartbeat:Connect(function(dt)
+        if not (isL and autoLeftEnabled or (not isL) and autoRightEnabled) then return end
+        local now = os.clock()
+        local char = LP.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
+        local spd = math.max(0, tonumber(NS) or 0)
+        local tgtP = list[idx]
+        local tg = _V3new(tgtP.X, root.Position.Y, tgtP.Z)
+        if ShoxAPReached("F" .. idx, root, tg, dt, spd) then
+            idx = idx + 1; stuckN = 0; lastPos = nil
+            if idx > #list then finish(); return end
+            tgtP = list[idx]
+        end
+        local d = tgtP - root.Position
+        local mv = _V3new(d.X, 0, d.Z)
+        mv = mv.Magnitude > 0.001 and mv.Unit or _V3zero
+        -- Stuck: kaum Bewegung ueber 0.5s (nicht waehrend Steal-Hold)
+        if not lastPos then
+            lastPos, lastT = root.Position, now
+        elseif now - lastT >= 0.5 then
+            local a, b = lastPos, root.Position
+            local moved = _V3new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+            lastPos, lastT = b, now
+            if moved < 3 and not isStealing then
+                stuckN = stuckN + 1
+                if stuckN == 1 then
+                    hum.Jump = true
+                elseif stuckN == 2 then
+                    sideUntil = now + 0.45
+                    sideSign = -sideSign
+                else
+                    stuckN = 0
+                    idx = idx + 1
+                    if idx > #list then finish(); return end
+                end
+            else
+                stuckN = 0
+            end
+        end
+        if now < sideUntil and mv.Magnitude > 0 then
+            local perp = _V3new(-mv.Z, 0, mv.X) * sideSign
+            mv = (mv * 0.4 + perp).Unit
+        end
+        hum:Move(mv, false)
+        -- waehrend des Steal-Holds langsamer (Prompt-Radius), danach volles Tempo
+        applyAutoPathVelocity(root, mv, isStealing and spd * 0.4 or spd, dt)
+    end)
+    if isL then alConn = conn else arConn = conn end
+end
+
 function stopAutoLeft()
     autoLeftEnabled = false
     if alConn then alConn:Disconnect(); alConn = nil end
@@ -4173,6 +4257,12 @@ function startAutoLeft()
         elseif alPhase == 2 then
             local tgt = _V3new(AP.L2.X, root.Position.Y, AP.L2.Z)
             if ShoxAPReached("L2", root, tgt, dt, spd) then
+                if ShoxAutoFull then
+                    if alConn then alConn:Disconnect(); alConn = nil end
+                    alPhase = 1
+                    ShoxAPFullReturn("L")
+                    return
+                end
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -4273,6 +4363,12 @@ function startAutoRight()
         elseif arPhase == 2 then
             local tgt = _V3new(AP.R2.X, root.Position.Y, AP.R2.Z)
             if ShoxAPReached("R2", root, tgt, dt, spd) then
+                if ShoxAutoFull then
+                    if arConn then arConn:Disconnect(); arConn = nil end
+                    arPhase = 1
+                    ShoxAPFullReturn("R")
+                    return
+                end
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -4640,13 +4736,13 @@ end
 
 local function tpBatHit()
     if _tpBatHitCooldown then return end
-    local bat = tpBatGetBat()
-    if not bat then return end
+    local bat = ShoxTPBatCached
+    if not bat or not bat.Parent then return end
     -- v1.7.3: erst schlagen, wenn die Bat wirklich in der Hand ist (vorher ging der erste Schlag ins Leere)
     if bat.Parent ~= LP.Character then return end
     _tpBatHitCooldown = true
     pcall(function() bat:Activate() end)
-    task.delay(0.25, function() _tpBatHitCooldown = false end)
+    task.delay(0.2, function() _tpBatHitCooldown = false end)
 end
 
 -- ══════════════════════════════════════════════════════
@@ -4703,7 +4799,7 @@ local function tpBatFollowTarget(root, targetRoot)
     local look = targetRoot.CFrame.LookVector
     local flat = Vector3.new(look.X, 0, look.Z)
     if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
-    local pos = tPos + flat * 2.5 + Vector3.new(0, 1.2, 0)
+    local pos = tPos + flat * 2.5
     root.CFrame = CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
     -- v1.7.1: Ziel-Velocity begrenzt übernehmen -> kein Wegschleudern, wenn das Ziel geflingt wird
     local tv = targetRoot.AssemblyLinearVelocity
@@ -4721,22 +4817,25 @@ local function tpBatUpdate()
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid or humanoid.Health <= 0 then return end
 
-    local bat = tpBatGetBat()
+    -- v1.9.0: Bat gecacht (vorher Kinder-/Backpack-Scan JEDEN Frame), Equip gedrosselt
+    local nowC = os.clock()
+    local bat = ShoxTPBatCached
+    if not bat or not bat.Parent or nowC - (ShoxTPBatCachedT or 0) > 0.5 then
+        bat = tpBatGetBat()
+        ShoxTPBatCached, ShoxTPBatCachedT = bat, nowC
+    end
     if not bat then return end
-    if bat.Parent ~= character then
+    if bat.Parent ~= character and nowC - (ShoxTPBatEquipT or 0) > 0.2 then
+        ShoxTPBatEquipT = nowC
         pcall(function() humanoid:EquipTool(bat) end)
     end
 
     -- v1.7.1: nicht TP-en, während du ein Brainrot trägst
     if LP:GetAttribute("Stealing") == true or character:GetAttribute("Stealing") == true then return end
-    local target, targetDist = tpBatClosestPlayer(root)
-    -- v1.7.1: Maximalreichweite, kein Teleport quer über die Map
-    if not target or (targetDist and targetDist > 120) then return end
-
-    local targetCharacter = target.Character
-    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-    local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
-    if not targetRoot or not targetHumanoid or targetHumanoid.Health <= 0 then return end
+    -- v1.9.0: Ziel mit Hysterese (kein Springen zwischen 2 Gegnern), Maximalreichweite 120
+    local targetRoot = ShoxPickChaseTarget(root, ShoxTPBatTarget)
+    ShoxTPBatTarget = targetRoot
+    if not targetRoot or (targetRoot.Position - root.Position).Magnitude > 120 then return end
 
     -- Follow the eligible target's current position on each Heartbeat.
     -- When no eligible target exists, remain at the last position.
@@ -5329,6 +5428,10 @@ local ShoxAL = {
     lightConn = nil, scanGen = 0, kindCache = {}, q = {}, qh = 1, qt = 0, worker = nil,
 }
 
+ShoxAL.shadow = setmetatable({}, {__mode = "k"})
+ShoxAL.acc = setmetatable({}, {__mode = "k"})
+ShoxAL.expl = setmetatable({}, {__mode = "k"})
+ShoxAL.animConn = setmetatable({}, {__mode = "k"})
 -- Pro ClassName nur 1x IsA pruefen (vorher ~15 IsA-Aufrufe pro neuem Objekt)
 function ShoxAL.kind(obj)
     local cn = obj.ClassName
@@ -5338,7 +5441,9 @@ function ShoxAL.kind(obj)
         elseif obj:IsA("Decal") or obj:IsA("Texture") then k = "image"
         elseif obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
             or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles")
-            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then k = "effect"
+            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") or obj:IsA("Highlight") then k = "effect"
+        elseif obj:IsA("Animator") then k = "anim"
+        elseif obj:IsA("Explosion") then k = "expl"
         elseif obj:IsA("PostEffect") then k = "post"
         else k = false end
         ShoxAL.kindCache[cn] = k
@@ -5359,6 +5464,29 @@ local function applyAntiLagDerender(obj)
             end
             if obj.Material ~= Enum.Material.SmoothPlastic then obj.Material = Enum.Material.SmoothPlastic end
             if obj.Reflectance ~= 0 then obj.Reflectance = 0 end
+            if obj.CastShadow then
+                if ShoxAL.shadow[obj] == nil then ShoxAL.shadow[obj] = true end
+                obj.CastShadow = false
+            end
+            -- Accessories/Huete lokal unsichtbar (nur Client, nichts wird geloescht)
+            local par = obj.Parent
+            if par and par:IsA("Accessory") and ShoxAL.acc[obj] == nil then
+                ShoxAL.acc[obj] = true
+                obj.LocalTransparencyModifier = 1
+            end
+        elseif kind == "anim" then
+            -- fremde Animationen stoppen; EIGENER Charakter bleibt unberuehrt
+            local ch = LP.Character
+            if ch and obj:IsDescendantOf(ch) then return end
+            for _, tr in ipairs(obj:GetPlayingAnimationTracks()) do pcall(function() tr:Stop(0) end) end
+            if not ShoxAL.animConn[obj] then
+                ShoxAL.animConn[obj] = obj.AnimationPlayed:Connect(function(tr)
+                    if antiLagEnabled then pcall(function() tr:Stop(0) end) end
+                end)
+            end
+        elseif kind == "expl" then
+            if ShoxAL.expl[obj] == nil then ShoxAL.expl[obj] = obj.Visible end
+            obj.Visible = false
         elseif kind == "image" then
             if ShoxAL.tr[obj] == nil then ShoxAL.tr[obj] = obj.Transparency end
             obj.Transparency = 1
@@ -5406,6 +5534,18 @@ function enableAntiLag()
         if ShoxAL.origQL == nil then ShoxAL.origQL = rs.QualityLevel; ShoxAL.origMesh = rs.MeshPartDetailLevel end
         rs.QualityLevel = 1
         rs.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
+    end)
+
+    -- v1.9.0: Lighting (Originalwerte merken)
+    pcall(function()
+        if not ShoxAL.lt then
+            ShoxAL.lt = {GlobalShadows = Lighting.GlobalShadows, FogEnd = Lighting.FogEnd, FogStart = Lighting.FogStart,
+                EnvironmentDiffuseScale = Lighting.EnvironmentDiffuseScale, EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale}
+        end
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 1e10
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
     end)
 
     if antiLagDescConn then antiLagDescConn:Disconnect() end
@@ -5459,6 +5599,14 @@ function disableAntiLag()
     if antiLagDescConn then antiLagDescConn:Disconnect(); antiLagDescConn = nil end
     if ShoxAL.lightConn then ShoxAL.lightConn:Disconnect(); ShoxAL.lightConn = nil end
     ShoxAL.q, ShoxAL.qh, ShoxAL.qt = {}, 1, 0
+    if ShoxAL.lt then
+        pcall(function() for k, v in pairs(ShoxAL.lt) do Lighting[k] = v end end)
+        ShoxAL.lt = nil
+    end
+    for an, c in pairs(ShoxAL.animConn) do pcall(function() c:Disconnect() end); ShoxAL.animConn[an] = nil end
+    for obj in pairs(ShoxAL.shadow) do pcall(function() obj.CastShadow = true end); ShoxAL.shadow[obj] = nil end
+    for obj in pairs(ShoxAL.acc) do pcall(function() obj.LocalTransparencyModifier = 0 end); ShoxAL.acc[obj] = nil end
+    for obj, v in pairs(ShoxAL.expl) do pcall(function() obj.Visible = v end); ShoxAL.expl[obj] = nil end
 
     for obj, mat in pairs(ShoxAL.mat) do
         if obj and obj.Parent then
@@ -6466,6 +6614,7 @@ function buildConfigTable()
         themeColor = currentColorTheme,
         useCarrySystem = useCarrySystem,
         autoStealVariant = autoStealVariant,
+        autoFull = ShoxAutoFull == true,
         carrySysNormal = CarrySystem.normalSpeed,
         carrySysCarry = CarrySystem.carrySpeed,
         carrySysLagger = CarrySystem.laggerSpeed,
@@ -6835,10 +6984,12 @@ function loadAllSettings()
     end
 
     useCarrySystem = data.useCarrySystem or false
-    autoStealVariant = math.floor(_clamp(readNumber(data.autoStealVariant, autoStealVariant or 1, 1, 3), 1, 3))
+    autoStealVariant = math.floor(_clamp(readNumber(data.autoStealVariant, autoStealVariant or 1, 1, 4), 1, 4))
     if autoStealVariantLabel then
         autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant)
     end
+    ShoxAutoFull = data.autoFull == true
+    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = ShoxAutoFull and "Full" or "Semi" end
     CarrySystem.normalSpeed = readNumber(data.carrySysNormal, NS, 1, 500)
     local savedBaseCarry = tonumber(data.carrySpeed)
     local savedSystemCarry = tonumber(data.carrySysCarry)
@@ -6957,6 +7108,8 @@ function forceResetUI()
     safeSet(mobSetLagger1, false)
     safeSet(mobSetLagger2, false)
     autoStealVariant = 1
+    ShoxAutoFull = false
+    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = "Semi" end
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(1) end
     bodyLockOffWhileCarry = true
     if bodyLockCarrySetVisual then bodyLockCarrySetVisual(true) end
@@ -7129,6 +7282,7 @@ function resetToFactoryDefaults()
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
+        ShoxAutoFull = false
         bodyLockOffWhileCarry = true
         autoAfterDrop = "Off"
         BAT_AIMBOT_SPEED = 50
@@ -8420,6 +8574,14 @@ function buildGui()
         if on then startAutoRight() else stopAutoRight() end
         if mobSetAutoRight then mobSetAutoRight(on) end
     end)
+    do
+        local row = mkRow(speedPage, 38)
+        mkLabel(row, "Auto L/R Mode")
+        ShoxAutoFullLabel = mkNeoSelector(row, ShoxAutoFull and "Full" or "Semi", {"Semi", "Full"}, function(sel)
+            ShoxAutoFull = (sel == "Full")
+            saveAllSettings()
+        end)
+    end
 
     mkSect(speedPage, "Teleport")
     do
@@ -9911,6 +10073,7 @@ function updateUIFromLoaded()
     if carrySysSoftStealRadiusBox then carrySysSoftStealRadiusBox.Text = tostring(CarrySystem.softStealRadius) end
     if carrySystemToggleSetter then carrySystemToggleSetter(useCarrySystem) end
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant or 1) end
+    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = ShoxAutoFull and "Full" or "Semi" end
     -- v1.7.4: Schalter-Visuals mit geladenem Zustand synchronisieren
     if ShoxSetLockBtnsVisual then ShoxSetLockBtnsVisual(mobileButtonsLocked) end
     if ShoxHideMasterVisual then ShoxHideMasterVisual(_G.AmbitiousHideMobileButtons == true) end
