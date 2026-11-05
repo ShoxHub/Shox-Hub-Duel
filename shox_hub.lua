@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.2"
+ShoxHubState.Version     = "v1.9.3"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -484,7 +484,7 @@ CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
-BAT_AIMBOT_SPEED = 50
+BAT_AIMBOT_SPEED = 58
 MOBILE_PANEL_WIDTH = 128
 MOBILE_PANEL_HEIGHT = 294
 CONFIG_FILE = "FictionHub.json"
@@ -700,8 +700,6 @@ function CarrySystem:updateMovement(dt)
     end
 
     local speed = self:getActiveSpeed()
-    local scap = ShoxStealCapGet and ShoxStealCapGet()
-    if scap and scap < speed then speed = scap end
     local moveDir = hum.MoveDirection
     local moving = moveDir.Magnitude > 0.1
 
@@ -2110,7 +2108,7 @@ local autoGrabStopEnabled = true
 
 autoStealVariant = 1
 
-AUTO_STEAL_VARIANT_NAMES = { "Normal", "Semi", "Semi Normal", "Full Auto" }
+AUTO_STEAL_VARIANT_NAMES = { "Normal", "Semi", "Semi Normal" }
 
 local function autoStealVariantName(n)
     n = _clamp(tonumber(n) or 1, 1, #AUTO_STEAL_VARIANT_NAMES)
@@ -2315,7 +2313,7 @@ local function executeSteal(prompt, podName)
         local stopTime = getAutoGrabStopTime(duration)
         local promptFired = false
         -- Normal (1) = durchgehender Hold ohne Pause; Semi (2) / Semi Normal (3) pausieren vor dem Ende
-        if autoGrabStopEnabled and autoStealVariant ~= 1 and autoStealVariant ~= 4 then
+        if autoGrabStopEnabled and autoStealVariant ~= 1 then
             while isStealing and Steal.AutoStealEnabled do
                 local elapsed = _tick() - startTime
                 if elapsed >= stopTime then break end
@@ -2334,7 +2332,7 @@ local function executeSteal(prompt, podName)
             if progressPct then progressPct.Text = _floor(stopProgress * 100) .. "%" end
             local phase2Timeout = math.max(2.99 - stopTime - math.max(duration - stopTime, 0), 0.05)
             if phase2Timeout > 5 then phase2Timeout = 5 end
-            if autoStealVariant == 3 then phase2Timeout = 0.6 end
+            if autoStealVariant == 3 then phase2Timeout = 0.45 end
             local phase2Start = _tick()
             while isStealing and Steal.AutoStealEnabled do
                 if _tick() - phase2Start >= phase2Timeout then
@@ -2407,11 +2405,7 @@ local function executeSteal(prompt, podName)
                 if not targetPart then break end
                 local char = LP.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
-                -- Full Auto (4): +4 Studs Toleranz, weil der Avatar beim Hold noch laeuft
-                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius + (autoStealVariant == 4 and 4 or 0) then break end
-                if autoStealVariant == 4 and hrp and targetPart then
-                    pcall(ShoxStealCapUpdate, hrp, targetPart, Steal.StealRadius + 4, duration - elapsed)
-                end
+                if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius then break end
                 if elapsed >= duration and not promptFired then
                     promptFired = true
                     if ShoxMarkStealStart then ShoxMarkStealStart() end
@@ -2429,7 +2423,6 @@ local function executeSteal(prompt, podName)
         if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
         if progressPct then progressPct.Text = "0%" end
         end, function(err) return tostring(err) end)
-        ShoxStealCap = nil
         if not recursionStarted then
             data.ready = true
             isStealing = false
@@ -2463,7 +2456,7 @@ function startAutoSteal()
         if ShoxIsCarrying and ShoxIsCarrying() then return end -- v1.7.3: nichts versuchen, waehrend du traegst
         -- v1.7.2: kurzer Cooldown zwischen Versuchen (kein Spam pro Frame)
         local nowS = os.clock()
-        if nowS - (ShoxStealLastTry or 0) < (autoStealVariant == 4 and 0.04 or 0.08) then return end
+        if nowS - (ShoxStealLastTry or 0) < (autoStealVariant == 3 and 0.06 or 0.08) then return end
         local p, n = findNearestPrompt()
         if p then ShoxStealLastTry = nowS; executeSteal(p, n) end
     end)
@@ -2476,7 +2469,6 @@ function stopAutoSteal()
         stealConnection = nil
     end
     isStealing = false
-    ShoxStealCap = nil
     Steal.AutoStealEnabled = false
     CONFIG.AUTO_STEAL_ENABLED = false
     if progressFill then
@@ -2650,84 +2642,16 @@ end
 -- ShoxTPDownGroundY = Y der HumanoidRootPart am Boden (S2 nutzt -7.00). Im Spiel pruefen: _G.ShoxATPDebug = true
 ShoxTPDownGroundY = -7.00
 
--- v1.9.2: Auto TP Down ohne CFrame-Teleport: nur Y-Tempo hoch setzen, X/Z bleibt unangetastet.
-ShoxFFConn = nil
-ShoxFFUntil = 0
-ShoxFFSpeed = 150
-function ShoxFastFall()
-    ShoxFFUntil = os.clock() + 2
-    if ShoxFFConn then return end
-    ShoxFFConn = RunService.Heartbeat:Connect(function()
-        local ch = LP.Character
-        local root = ch and ch:FindFirstChild("HumanoidRootPart")
-        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-        local stop = (not root) or (not hum) or hum.Health <= 0 or os.clock() > ShoxFFUntil
-            or hum.FloorMaterial ~= Enum.Material.Air
-        local vy = -ShoxFFSpeed
-        if not stop then
-            local okG, hit = pcall(ShoxGetGroundHit, ch, root)
-            if okG and hit and hit.Position then
-                local dist = root.Position.Y - (hit.Position.Y + ShoxGetStandOffset(hum, root))
-                if dist <= 0.4 then stop = true end
-                vy = -math.min(ShoxFFSpeed, math.max(dist * 30, 12))
-            end
-        end
-        if stop then
-            if ShoxFFConn then ShoxFFConn:Disconnect(); ShoxFFConn = nil end
-            return
-        end
-        local v = root.AssemblyLinearVelocity
-        if v.Y > vy then root.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z) end
-    end)
-end
-
-function doTpDown(force)
-    local ok, err = pcall(function()
+-- v1.9.3: TP Down exakt wie Clean Hub: CFrame auf Y=-7 (gleiche Yaw), Velocity 0. Fast-Fall entfernt.
+function doTpDown()
+    pcall(function()
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
-        local humanoid = char:FindFirstChildOfClass("Humanoid")
-        if not root or not humanoid or humanoid.Health <= 0 then return end
-        if force ~= true then
-            if humanoid.FloorMaterial ~= Enum.Material.Air then return end
-            if root.Position.Y < math.clamp(tonumber(ShoxHubAutoTPDownHeight) or 20, 1, 500) then return end
-        end
-        local pos = root.Position
-        local _, yaw = root.CFrame:ToEulerAnglesYXZ()
-        -- v1.9.0: echte Bodenhoehe per Raycast + Standhoehe (fixes -7.00 kann UNTER dem Boden liegen = Kollision/Bremsen)
-        local ty = ShoxTPDownGroundY
-        local okG, hit = pcall(ShoxGetGroundHit, char, root)
-        if okG and hit and hit.Position then
-            ty = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
-        end
-        if ty >= pos.Y - 0.5 then return end
-        if force ~= true then
-            -- Auto: kein Teleport (der bremste dich), nur schneller Fall mit unveraendertem X/Z-Tempo
-            if _G.ShoxATPDebug then
-                warn(string.format("[ShoxATP] Fast-Fall von Y=%.2f -> Ziel-Y=%.2f, Tempo X/Z=%.1f", pos.Y, ty, Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude))
-            end
-            ShoxFastFall()
-            return
-        end
-        if _G.ShoxATPDebug then
-            warn(string.format("[ShoxATP] TP von Y=%.2f -> Y=%.2f (%s, ray=%s)", pos.Y, ty, force == true and "manuell" or "auto", tostring(okG and hit ~= nil)))
-        end
-        root.CFrame = CFrame.new(pos.X, ty, pos.Z) * CFrame.Angles(0, yaw, 0)
-        -- horizontales Tempo bleibt (sonst Speed-Einbruch, die Speed-Systeme setzen X/Z ohnehin jeden Frame neu)
-        local lv = root.AssemblyLinearVelocity
-        root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
-        root.AssemblyAngularVelocity = Vector3.zero
-        pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Running) end)
-        -- ein Frame spaeter Tempo erneut sichern, falls ein anderes System es nach dem TP gebremst hat
-        task.defer(function()
-            if root.Parent then
-                local v2 = root.AssemblyLinearVelocity
-                root.AssemblyLinearVelocity = Vector3.new(lv.X, math.min(v2.Y, 0), lv.Z)
-                if _G.ShoxATPDebug then warn(string.format("[ShoxATP] Tempo vorher=%.1f nachher=%.1f", Vector3.new(lv.X,0,lv.Z).Magnitude, Vector3.new(v2.X,0,v2.Z).Magnitude)) end
-            end
-        end)
+        if not root then return end
+        root.CFrame = _CFnew(root.Position.X, -7, root.Position.Z) * CFrame.Angles(0, select(2, root.CFrame:ToEulerAnglesYXZ()), 0)
+        root.AssemblyLinearVelocity = _V3zero
     end)
-    if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
 
 -- MIRROR TP DOWN
@@ -3788,6 +3712,10 @@ ShoxAPFullActive = false
 ShoxAPCapUntil = 0
 function ShoxCarryLatch(secs) ShoxCarryLatchUntil = os.clock() + (tonumber(secs) or 14) end
 function ShoxCarryLatched() return os.clock() < ShoxCarryLatchUntil end
+-- v1.9.3: Full-Rueckweg: harte Obergrenze 30 (oder dein Carry-Speed, falls kleiner), unabhaengig von der Carry-Erkennung
+function ShoxAPReturnCap()
+    return math.min(30, math.max(tonumber(CarrySystem and CarrySystem.carrySpeed) or 30, 1))
+end
 
 -- v1.9.2: Debug: _G.ShoxCarryDebug = true -> beim Steal werden Attribute/Kinder vorher/nachher verglichen (warn)
 function ShoxCarrySnap()
@@ -3815,35 +3743,6 @@ function ShoxCarryDebugRun()
         for k in pairs(a.kids) do if not b.kids[k] then warn("[ShoxCarry] Char Kind weg: " .. k) end end
         warn("[ShoxCarry] Dump Ende (Carry gerade: " .. tostring(ShoxIsCarrying and ShoxIsCarrying()) .. ")")
     end)
-end
-
--- v1.9.2: Full Auto Steal: Tempo-Deckel NUR wenn du sonst waehrend des Holds aus der Reichweite laufen wuerdest
-ShoxStealCap = nil
-ShoxStealCapT = 0
-function ShoxStealCapGet()
-    if ShoxStealCap and os.clock() - ShoxStealCapT < 0.25 then return ShoxStealCap end
-    return nil
-end
-function ShoxStealCapUpdate(hrp, part, radius, remain)
-    if not hrp or not part or not part.Parent then ShoxStealCap = nil; return end
-    local p = hrp.Position - part.Position
-    local lv = hrp.AssemblyLinearVelocity
-    local v = Vector3.new(lv.X, 0, lv.Z)
-    local sp = v.Magnitude
-    if sp < 1 or remain <= 0.05 then ShoxStealCap = nil; return end
-    local a = v:Dot(v)
-    local b = 2 * p:Dot(v)
-    local c = p:Dot(p) - radius * radius
-    local te
-    if c >= 0 then
-        te = 0
-    else
-        local disc = b * b - 4 * a * c
-        if disc < 0 then te = 1e9 else te = (-b + math.sqrt(disc)) / (2 * a) end
-    end
-    if te >= remain + 0.15 then ShoxStealCap = nil; return end
-    ShoxStealCap = math.max(sp * math.max(te, 0.05) / (remain + 0.15), 8)
-    ShoxStealCapT = os.clock()
 end
 
 -- Attribut-Events: Cache sofort verwerfen, damit Carry nicht bis zu 0.1s zu spaet erkannt wird
@@ -4206,8 +4105,7 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
        or os.clock() < (ShoxAPCapUntil or 0) then
         speed = math.min(speed, carryCap)
     end
-    local scap = ShoxStealCapGet and ShoxStealCapGet()
-    if scap and scap < speed then speed = scap end
+    if ShoxAPFullActive then speed = math.min(speed, ShoxAPReturnCap()) end
     local current = root.AssemblyLinearVelocity
     local desiredX = flat.Unit.X * speed
     local desiredZ = flat.Unit.Z * speed
@@ -4236,47 +4134,6 @@ function ShoxAPReached(key, root, tgt, dt, spd)
     return false
 end
 
--- v1.9.1: eigene Teile nur in Zielnaehe (<=14 Studs) nicht-kollidierend (Ueberlappung mit dem Gegner = Wegschleudern)
-ShoxNCOrig = setmetatable({}, {__mode = "k"})
-ShoxNCConn = nil
-function ShoxNoCollide(on, getTarget)
-    if ShoxNCConn then ShoxNCConn:Disconnect(); ShoxNCConn = nil end
-    for p in pairs(ShoxNCOrig) do
-        if p.Parent then pcall(function() p.CanCollide = true end) end
-        ShoxNCOrig[p] = nil
-    end
-    if not on then return end
-    local list, listT, off = {}, 0, true
-    ShoxNCConn = RunService.Stepped:Connect(function()
-        local ch = LP.Character
-        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
-        local tr = getTarget and getTarget()
-        local near = tr and tr.Parent and (tr.Position - hrp.Position).Magnitude <= 14
-        local now = os.clock()
-        if near then
-            if now - listT > 1 then
-                listT = now
-                list = {}
-                for _, d in ipairs(ch:GetDescendants()) do
-                    if d:IsA("BasePart") then list[#list + 1] = d end
-                end
-            end
-            for i = 1, #list do
-                local p = list[i]
-                if p.Parent and p.CanCollide then ShoxNCOrig[p] = true; p.CanCollide = false end
-            end
-            off = false
-        elseif not off then
-            for p in pairs(ShoxNCOrig) do
-                if p.Parent then pcall(function() p.CanCollide = true end) end
-                ShoxNCOrig[p] = nil
-            end
-            off = true
-        end
-    end)
-end
-
 -- v1.9.2: FULL-Modus neu. Nach L2/R2 zurueck ueber L1/R1 zur Gegenseite.
 -- Carry-Latch (Brainrot gilt nach dem Steal fest als getragen), weiches Abbremsen am letzten Wegpunkt,
 -- Rubberband-Erkennung (Server-Rueckschlag > 8 Studs), Stuck-Erkennung nur mit Tempo und nicht am Ende.
@@ -4298,7 +4155,6 @@ function ShoxAPFullReturn(side)
     local conn
     local function finish()
         ShoxAPFullActive = false
-        ShoxStealCap = nil
         if tmpSteal then pcall(stopAutoSteal) end
         if isL then stopAutoLeft() else stopAutoRight() end
         local ch = LP.Character
@@ -4316,7 +4172,7 @@ function ShoxAPFullReturn(side)
         local root = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
-        local spd = math.max(0, tonumber(NS) or 0)
+        local spd = math.min(math.max(0, tonumber(NS) or 0), ShoxAPReturnCap())
         local lastP = list[#list]
         local tgtP = list[idx]
         local pos = root.Position
@@ -4600,29 +4456,26 @@ end
 
 function getClosestTarget()
     local char = LP.Character
-    if not char or not char.Parent then return nil end
+    if not char then return nil end
     local root = char:FindFirstChild("HumanoidRootPart")
-    local ownHumanoid = char:FindFirstChildOfClass("Humanoid")
-    if not root or not ownHumanoid or ownHumanoid.Health <= 0 then return nil end
-
+    if not root then return nil end
     local rpos = root.Position
-    local closest, minDistSq = nil, _huge
+    local closest, minDist = nil, _huge
     local plist = _GetPlayersCached()
     for i = 1, #plist do
         local plr = plist[i]
-        -- This is intentionally player-vs-player target selection: every other
-        -- living player is eligible, regardless of the game's Remote/object names.
-        if plr ~= LP and plr.Parent == Players then
-            local targetCharacter = plr.Character
-            if targetCharacter and targetCharacter.Parent then
-                local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
-                local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
-                if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
-                    local offset = targetRoot.Position - rpos
-                    local distanceSq = offset:Dot(offset)
-                    if distanceSq < minDistSq then
-                        minDistSq = distanceSq
-                        closest = targetRoot
+        if plr ~= LP then
+            local c = plr.Character
+            if c then
+                local tRoot = c:FindFirstChild("HumanoidRootPart")
+                if tRoot then
+                    local hum = c:FindFirstChildOfClass("Humanoid")
+                    if hum and hum.Health > 0 then
+                        local dx = tRoot.Position.X - rpos.X
+                        local dy = tRoot.Position.Y - rpos.Y
+                        local dz = tRoot.Position.Z - rpos.Z
+                        local d = dx*dx + dy*dy + dz*dz
+                        if d < minDist then minDist = d; closest = tRoot end
                     end
                 end
             end
@@ -4631,24 +4484,21 @@ function getClosestTarget()
     return closest
 end
 
-local _nextBatSwingAt = 0
 function trySwing()
-    local now = _tick()
-    if now < _nextBatSwingAt then return end
-    local ok = pcall(function()
+    pcall(function()
         local char = LP.Character
-        if not char or not char.Parent then return end
+        if not char then return end
+        local currentTool = char:FindFirstChildOfClass("Tool")
+        if currentTool and not isBatTool(currentTool) then return end
         local bat = findBat()
-        if not bat or not bat:IsA("Tool") then return end
-        if bat.Parent ~= char then
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            if hum then pcall(function() hum:EquipTool(bat) end) end
-            return
+        if bat then
+            if bat.Parent ~= char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then pcall(function() hum:EquipTool(bat) end) end
+            end
+            pcall(function() bat:Activate() end)
         end
-        bat:Activate()
-        _nextBatSwingAt = now + 0.25
     end)
-    if not ok then _nextBatSwingAt = now + 0.2 end
 end
 
 function stopAimbotAdapt()
@@ -4665,51 +4515,14 @@ function stopAimbotAdapt()
         pcall(function() hum:ChangeState(Enum.HumanoidStateType.Running) end)
     end
     if root then
-        local velocity = root.AssemblyLinearVelocity
-        root.AssemblyLinearVelocity = _V3new(velocity.X, velocity.Y, velocity.Z)
+        root.AssemblyLinearVelocity = _V3new(0, -0.1, 0)
         root.AssemblyAngularVelocity = _V3zero
     end
     _prevAutoRotate = nil
     lastMoveDir = _V3zero
     _unsuppressBodyLock(true)
-    if ShoxNoCollide then ShoxNoCollide(false) end
 end
 
-ShoxAimbotTarget = nil
-ShoxAimbotEquipT = 0
-
--- v1.7.3: gemeinsame Zielwahl mit Hysterese (kein Hin- und Herspringen zwischen 2 Gegnern)
-function ShoxPickChaseTarget(root, current)
-    local best, bestD = nil, _huge
-    local rpos = root.Position
-    local plist = _GetPlayersCached()
-    for i = 1, #plist do
-        local plr = plist[i]
-        if plr ~= LP then
-            local c = plr.Character
-            local tr = c and c:FindFirstChild("HumanoidRootPart")
-            local h = c and c:FindFirstChildOfClass("Humanoid")
-            if tr and h and h.Health > 0 then
-                local d = (tr.Position - rpos).Magnitude
-                if d < bestD then best, bestD = tr, d end
-            end
-        end
-    end
-    if current and current.Parent then
-        local h = current.Parent:FindFirstChildOfClass("Humanoid")
-        if h and h.Health > 0 then
-            if (current.Position - rpos).Magnitude <= bestD * 1.25 + 3 then return current end
-        end
-    end
-    return best
-end
-
--- v1.8.0: ULTIMATIVER BAT AIMBOT (Aimbot + Bat Bypass + TP Bat in einem):
---  weit (> 10 Studs): Anlauf per Velocity auf den Abfangpunkt (Ziel-Tempo aus Positionsdifferenz + Ping-Vorhalt)
---  nah (<= 10 Studs): CFrame-Snap 3.2 Studs vor das vorausberechnete Ziel (Ping-Vorhalt), Blick aufs Ziel;
---  eigenes Tempo = Ziel-Tempo (begrenzt) -> bleibt dran, wird nicht weggeschleudert. Swing nur nach dem Snap.
-ShoxAimbotLastPos = nil
-ShoxAimbotVel = _V3zero
 function startAimbotAdapt()
     if _aimbotConn then return end
     _suppressBodyLock()
@@ -4718,91 +4531,48 @@ function startAimbotAdapt()
         if _prevAutoRotate == nil then _prevAutoRotate = hum0.AutoRotate end
         hum0.AutoRotate = false
     end
-    ShoxAimbotTarget = nil
-    ShoxAimbotLastPos = nil
-    ShoxAimbotVel = _V3zero
-    ShoxNoCollide(true, function() return ShoxAimbotTarget end)
-    _aimbotConn = RunService.RenderStepped:Connect(function(dt)
+    _aimbotConn = RunService.RenderStepped:Connect(function()
         if not autoBatEnabled then return end
-        if _tick() < _globalMovementLock then return end
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         local hum = char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 then return end
-        if hum.AutoRotate then hum.AutoRotate = false end
-
-        -- Bat nur ausruesten, wenn aktuell keine Bat/Slap in der Hand ist (gedrosselt)
-        local now = _tick()
-        local tool = char:FindFirstChildOfClass("Tool")
-        if not (tool and isBatTool(tool)) and now - ShoxAimbotEquipT > 0.25 then
-            ShoxAimbotEquipT = now
+        if not root or not hum then return end
+        if not char:FindFirstChildOfClass("Tool") then
             local bat = findBat()
             if bat then pcall(function() hum:EquipTool(bat) end) end
         end
-
-        local target = ShoxPickChaseTarget(root, ShoxAimbotTarget)
-        if target ~= ShoxAimbotTarget then
-            ShoxAimbotTarget = target
-            ShoxAimbotLastPos = nil
-            ShoxAimbotVel = _V3zero
-        end
+        local target = getClosestTarget()
         if not target then return end
-
-        local safeDt = _clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
-        local myPos, tPos = root.Position, target.Position
-        -- Ziel-Tempo aus Positionsdifferenz (das, was dein Client wirklich sieht); Teleports/Flings verwerfen
-        if ShoxAimbotLastPos then
-            local raw = (tPos - ShoxAimbotLastPos) / safeDt
-            local rf = _V3new(raw.X, 0, raw.Z)
-            if rf.Magnitude < 300 then
-                ShoxAimbotVel = ShoxAimbotVel:Lerp(rf, 1 - math.exp(-safeDt * 14))
-            end
+        local targetVel = target.AssemblyLinearVelocity
+        local myPos = root.Position
+        local targetPos = target.Position
+        local predictPos = targetPos + targetVel * 0.14
+        predictPos = predictPos + target.CFrame.LookVector * 0.3
+        local direction = predictPos - myPos
+        local flatDir = _V3new(direction.X, 0, direction.Z)
+        if flatDir.Magnitude > 0 then flatDir = flatDir.Unit else flatDir = _V3new(0,0,0) end
+        local desiredHeight = targetPos.Y + 3.7
+        local yVel = (desiredHeight - myPos.Y) * 19.5 + targetVel.Y * 0.8
+        if hum.FloorMaterial ~= Enum.Material.Air then yVel = math.max(yVel, 13) end
+        yVel = _clamp(yVel, -70, 110)
+        local desiredVel = _V3new(flatDir.X * BAT_AIMBOT_SPEED, yVel, flatDir.Z * BAT_AIMBOT_SPEED)
+        root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, 0.8)
+        local speed3 = targetVel.Magnitude
+        local predictTime = _clamp(speed3 / 150, 0.05, 0.2)
+        local predictedPos = targetPos + targetVel * predictTime
+        local toPredict = predictedPos - myPos
+        if toPredict.Magnitude > 0.1 then
+            local goalCF = _CFlookAt(myPos, predictedPos)
+            local diffCF = root.CFrame:Inverse() * goalCF
+            local rx, ry, rz = diffCF:ToEulerAnglesXYZ()
+            rx = _clamp(rx, -2.5, 2.5)
+            ry = _clamp(ry, -2.5, 2.5)
+            rz = _clamp(rz, -2.5, 2.5)
+            root.AssemblyAngularVelocity = root.CFrame:VectorToWorldSpace(_V3new(rx * 42, ry * 42, rz * 42))
         end
-        ShoxAimbotLastPos = tPos
-        local flatV = ShoxAimbotVel
-        if flatV.Magnitude > 80 then flatV = flatV.Unit * 80 end
-        if flatV.Magnitude < 1.5 then flatV = _V3zero end
-
-        local speed = _clamp(tonumber(BAT_AIMBOT_SPEED) or 50, 1, 200)
-        local ping = ShoxGetPingSec()
-        local dx, dz = tPos.X - myPos.X, tPos.Z - myPos.Z
-        local flatDist = _sqrt(dx * dx + dz * dz)
-        local cv = root.AssemblyLinearVelocity
-
-        if flatDist > 10 then
-            -- Anlauf: Abfangpunkt = Zeit bis zum Ziel + Ping-Anteil, 3.5 Studs Standoff, weich abbremsen
-            local lead = _clamp(flatDist / math.max(speed, 10), 0, 0.35) + _clamp(ping * 0.6, 0, 0.15)
-            local px = tPos.X + flatV.X * lead - myPos.X
-            local pz = tPos.Z + flatV.Z * lead - myPos.Z
-            local pm = _sqrt(px * px + pz * pz)
-            local f = math.min(speed, (pm - 3.5) * 12 + flatV.Magnitude)
-            local desired = pm > 0.01 and _V3new(px / pm * f, 0, pz / pm * f) or flatV
-            local alpha = 1 - math.exp(-safeDt * 22)
-            -- Nur X/Z setzen; Y bleibt Physik
-            root.AssemblyLinearVelocity = _V3new(cv.X + (desired.X - cv.X) * alpha, cv.Y, cv.Z + (desired.Z - cv.Z) * alpha)
-            -- Nur Yaw drehen (kein Kippen)
-            local goalYaw = math.atan2(-dx, -dz)
-            local _, curYaw = root.CFrame:ToEulerAnglesYXZ()
-            local dYaw = (goalYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
-            local ra = _clamp(1 - math.exp(-safeDt * 30), 0.35, 1)
-            root.CFrame = CFrame.new(myPos) * CFrame.Angles(0, curYaw + dYaw * ra, 0)
-            root.AssemblyAngularVelocity = _V3zero
-        else
-            -- Nahbereich: Snap auf deine Seite, 3.2 Studs vor das vorausberechnete Ziel, Blick aufs Ziel
-            local l2 = _clamp(ping + 0.08, 0.05, 0.3)
-            local ax, az = tPos.X + flatV.X * l2, tPos.Z + flatV.Z * l2
-            local bx, bz = myPos.X - ax, myPos.Z - az
-            local bm = _sqrt(bx * bx + bz * bz)
-            if bm < 0.1 then bx, bz, bm = 0, 1, 1 end
-            root.CFrame = CFrame.lookAt(_V3new(ax + bx / bm * 3.2, myPos.Y, az + bz / bm * 3.2), _V3new(ax, myPos.Y, az))
-            root.AssemblyLinearVelocity = _V3new(flatV.X, cv.Y, flatV.Z)
-            root.AssemblyAngularVelocity = _V3zero
-            if _abs(tPos.Y - myPos.Y) <= 6 then trySwing() end
-        end
-        if tPos.Y - myPos.Y > 6 and hum.FloorMaterial ~= Enum.Material.Air then
-            hum.Jump = true
-        end
+        local distToTarget = (root.Position - target.Position).Magnitude
+        if distToTarget <= 8 then trySwing() end
     end)
 end
 
@@ -4860,17 +4630,47 @@ _G.AlvaroTP = _G.AlvaroTP or {
 }
 
 local _tpBatHitCooldown = false
+local _tpBatMaxRange    = 100
 
--- ──────────────────────────────────────────────────────────────
--- ANTI-DIE (integrado al TP BAT); el lagger no soportado está deshabilitado.
--- ──────────────────────────────────────────────────────────────
+-- ANTI-DIE (aus dem Clean Hub; der Lagger-Teil ist bewusst NICHT uebernommen)
 local _tpBatAntiDieThread = nil
-local _tpBatLagThread     = nil
 
--- TP Bat must not fake health or force local Humanoid states.
--- A client cannot provide authoritative death protection.
 local function tpBatStartAntiDie()
-    return
+    if _tpBatAntiDieThread then return end
+    _tpBatAntiDieThread = task.spawn(function()
+        while batDesyncTpEnabled do
+            pcall(function()
+                local char = LP.Character
+                if not char then task.wait(0.1) return end
+                local hum  = char:FindFirstChildOfClass("Humanoid")
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if hum then
+                    if hum.Health <= 0 then
+                        hum.Health = hum.MaxHealth
+                    end
+                    if hum.PlatformStand then hum.PlatformStand = false end
+                    if hum.Sit then hum.Sit = false end
+                    local st = hum:GetState()
+                    if st == Enum.HumanoidStateType.Physics
+                       or st == Enum.HumanoidStateType.Ragdoll
+                       or st == Enum.HumanoidStateType.FallingDown then
+                        hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                        hum:ChangeState(Enum.HumanoidStateType.Running)
+                    end
+                end
+                if root and sethiddenproperty then
+                    pcall(sethiddenproperty, root, "PhysicsRepRootPart", nil)
+                end
+                if char then
+                    for _, p in ipairs(char:GetDescendants()) do
+                        if p:IsA("BasePart") then p.CanCollide = false end
+                    end
+                end
+            end)
+            task.wait(0.05)
+        end
+        _tpBatAntiDieThread = nil
+    end)
 end
 
 local function tpBatStopAntiDie()
@@ -4880,174 +4680,109 @@ local function tpBatStopAntiDie()
     end
 end
 
--- The former lag payload spammed SetPlayerBlockList with oversized nested
--- tables. It is disabled because it is unsupported and can destabilize servers.
-local function tpBatSetKBPS(_v)
-    -- NetworkClient:SetOutgoingKBPSLimit is not a supported client method.
-end
-
-local function tpBatFireLagPayload()
-    -- Deliberately no-op; never send server-disruptive payloads.
-end
-
-local function tpBatStartLagger()
-    -- Intentionally disabled together with the unsupported lag payload.
-    return
-end
-
-local function tpBatStopLagger()
-    if _tpBatLagThread then
-        pcall(task.cancel, _tpBatLagThread)
-        _tpBatLagThread = nil
-    end
-    tpBatSetKBPS(0)
-end
-
--- ══════════════════════════════════════════════════════
 -- BAT
--- ══════════════════════════════════════════════════════
 local function tpBatGetBat()
     local character = LP.Character
     if not character then return nil end
-    local function score(tool)
-        if not tool or not tool:IsA("Tool") then return 0 end
-        local name = tool.Name:lower()
-        if name == "bat" then return 100 end
-        if name:find("bat", 1, true) then return 90 end
-        if name:find("slap", 1, true) then return 70 end
-        return 0
-    end
-    local best, bestScore = nil, 0
-    local okChar, equipped = pcall(function() return character:GetChildren() end)
-    if okChar then
-        for _, tool in ipairs(equipped) do
-            local candidateScore = score(tool)
-            if candidateScore > bestScore then best, bestScore = tool, candidateScore end
+    for _, tool in ipairs(character:GetChildren()) do
+        if tool:IsA("Tool") then
+            local name = tool.Name:lower()
+            if name:find("bat") or name:find("slap") then return tool end
         end
     end
-    if best then return best end
     local backpack = LP:FindFirstChild("Backpack")
     if not backpack then return nil end
-    local okBackpack, tools = pcall(function() return backpack:GetChildren() end)
-    if not okBackpack then return nil end
-    for _, tool in ipairs(tools) do
-        local candidateScore = score(tool)
-        if candidateScore > bestScore then best, bestScore = tool, candidateScore end
+    for _, tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA("Tool") then
+            local name = tool.Name:lower()
+            if name:find("bat") or name:find("slap") then
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                if humanoid then pcall(function() humanoid:EquipTool(tool) end) end
+                return tool
+            end
+        end
     end
-    if best then
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        if humanoid then pcall(function() humanoid:EquipTool(best) end) end
-    end
-    return best
+    return nil
 end
 
 local function tpBatHit()
     if _tpBatHitCooldown then return end
-    local bat = ShoxTPBatCached
-    if not bat or not bat.Parent then return end
-    -- v1.7.3: erst schlagen, wenn die Bat wirklich in der Hand ist (vorher ging der erste Schlag ins Leere)
-    if bat.Parent ~= LP.Character then return end
     _tpBatHitCooldown = true
-    pcall(function() bat:Activate() end)
-    task.delay(0.2, function() _tpBatHitCooldown = false end)
+    pcall(function()
+        local bat = tpBatGetBat()
+        if not bat then return end
+        bat:Activate()
+        local remote = bat:FindFirstChildWhichIsA("RemoteEvent")
+        if remote then remote:FireServer() end
+    end)
+    task.delay(0.08, function() _tpBatHitCooldown = false end)
 end
 
--- ══════════════════════════════════════════════════════
 -- TARGETING
--- ══════════════════════════════════════════════════════
-_tpBatToolCache = setmetatable({}, {__mode = "k"})
-
--- v1.7.0: erkennt Bat UND alle Slap-Varianten (vorher nur "bat" -> Gegner mit Slap wurden nie anvisiert)
-local function tpBatPlayerHasBat(player)
-    if not player or player == LP then return false end
-    local now = _tick()
-    local cached = _tpBatToolCache[player]
-    if cached and now - cached.t < 0.5 then return cached.v end
-
-    local function hasBat(container)
-        if not container then return false end
-        for _, item in ipairs(container:GetChildren()) do
-            if item:IsA("Tool") and isBatTool(item) then return true end
-        end
-        return false
-    end
-
-    local backpack = player:FindFirstChildOfClass("Backpack") or player:FindFirstChild("Backpack")
-    local v = hasBat(player.Character) or hasBat(backpack)
-    _tpBatToolCache[player] = {t = now, v = v}
-    return v
-end
-
--- v1.7.3: immer der NAECHSTE lebende Spieler (vorher wurde ein weit entfernter Spieler mit Bat bevorzugt)
 local function tpBatClosestPlayer(root)
-    local best, dist = nil, math.huge
+    local closest, distance = nil, math.huge
     for _, player in ipairs(Players:GetPlayers()) do
-        local character = player ~= LP and player.Character
+        local character  = player ~= LP and player.Character
         local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local humanoid   = character and character:FindFirstChildOfClass("Humanoid")
         if targetRoot and humanoid and humanoid.Health > 0 then
-            local d = (root.Position - targetRoot.Position).Magnitude
-            if d < dist then best, dist = player, d end
+            local candidateDistance = (root.Position - targetRoot.Position).Magnitude
+            if candidateDistance < distance then
+                closest, distance = player, candidateDistance
+            end
         end
     end
-    return best, dist
+    return closest, distance
 end
 
--- v1.7.0: landet vor dem Ziel UND schaut es an (vorher gleiche Blickrichtung wie das Ziel = Schlag ins Leere)
-local function tpBatFollowTarget(root, targetRoot)
-    if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
-        return false
-    end
-    -- v1.7.4: Ziel-Vorhalt (Ping + Interpolation), sonst sieht der Server den Gegner schon weiter vorn
-    local fv0 = targetRoot.AssemblyLinearVelocity
-    local fv = Vector3.new(fv0.X, 0, fv0.Z)
-    if fv.Magnitude > 60 then fv = fv.Unit * 60 end
-    local tPos = targetRoot.Position + fv * math.clamp(ShoxGetPingSec() + 0.08, 0.05, 0.3)
-    local look = targetRoot.CFrame.LookVector
-    local flat = Vector3.new(look.X, 0, look.Z)
-    if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
-    local pos = tPos + flat * 2.5
-    root.CFrame = CFrame.lookAt(pos, Vector3.new(tPos.X, pos.Y, tPos.Z))
-    -- v1.7.1: Ziel-Velocity begrenzt übernehmen -> kein Wegschleudern, wenn das Ziel geflingt wird
-    local tv = targetRoot.AssemblyLinearVelocity
-    if tv.Magnitude > 60 then tv = tv.Unit * 60 end
-    root.AssemblyLinearVelocity = tv
-    root.AssemblyAngularVelocity = Vector3.zero
-    return true
+-- NETWORK OWNER TELEPORT
+local function tpBatNetworkOwnerTeleport(root, targetRoot)
+    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(nil) end end)
+    task.wait()
+    local targetPosition = targetRoot.Position + _V3new(0, 0.9, 0)
+    root.CFrame = _CFnew(targetPosition)
+    root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
+    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(LP) end end)
 end
 
+-- UPDATE LOOP
 local function tpBatUpdate()
     if not batDesyncTpEnabled then return end
-    if tick() < _globalMovementLock then return end
     local character = LP.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-    if not root or not humanoid or humanoid.Health <= 0 then return end
+    local root      = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
+    if not root or not humanoid then return end
 
-    -- v1.9.0: Bat gecacht (vorher Kinder-/Backpack-Scan JEDEN Frame), Equip gedrosselt
-    local nowC = os.clock()
-    local bat = ShoxTPBatCached
-    if not bat or not bat.Parent or nowC - (ShoxTPBatCachedT or 0) > 0.5 then
-        bat = tpBatGetBat()
-        ShoxTPBatCached, ShoxTPBatCachedT = bat, nowC
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if animator then
+        pcall(function()
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do track:Stop() end
+        end)
     end
-    if not bat then return end
-    if bat.Parent ~= character and nowC - (ShoxTPBatEquipT or 0) > 0.2 then
-        ShoxTPBatEquipT = nowC
+
+    local bat = tpBatGetBat()
+    if bat and bat.Parent ~= character then
         pcall(function() humanoid:EquipTool(bat) end)
     end
 
-    -- v1.7.1: nicht TP-en, während du ein Brainrot trägst
-    if LP:GetAttribute("Stealing") == true or character:GetAttribute("Stealing") == true then return end
-    -- v1.9.0: Ziel mit Hysterese (kein Springen zwischen 2 Gegnern), Maximalreichweite 120
-    local targetRoot = ShoxPickChaseTarget(root, ShoxTPBatTarget)
-    ShoxTPBatTarget = targetRoot
-    if not targetRoot or (targetRoot.Position - root.Position).Magnitude > 120 then return end
+    local target, distance = tpBatClosestPlayer(root)
+    if not target or distance > _tpBatMaxRange then return end
+    local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetRoot then return end
 
-    -- Follow the eligible target's current position on each Heartbeat.
-    -- When no eligible target exists, remain at the last position.
-    if not tpBatFollowTarget(root, targetRoot) then return end
+    tpBatNetworkOwnerTeleport(root, targetRoot)
+
+    local camera = workspace.CurrentCamera
+    if camera then
+        camera.CFrame = _CFnew(camera.CFrame.Position, targetRoot.Position)
+    end
     tpBatHit()
+
+    pcall(function()
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = false end
+        end
+    end)
 end
 
 function startAlvaroTP()
@@ -5069,10 +4804,9 @@ function startAlvaroTP()
 
     batDesyncTpConn  = RunService.Heartbeat:Connect(tpBatUpdate)
     _G.AlvaroTP.conn = batDesyncTpConn
-    ShoxNoCollide(true, function() return ShoxTPBatTarget end)
 
-    -- No client-side health manipulation or unsupported lag payload is started.
-    tpBatStartLagger()
+    -- Anti-Die aus dem Clean Hub (kein Lagger)
+    tpBatStartAntiDie()
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(true) end
     updateTpBatButtonVisual(true)
@@ -5087,13 +4821,17 @@ function stopAlvaroTP()
         batDesyncTpConn = nil
     end
     _G.AlvaroTP.conn            = nil
-    if ShoxNoCollide then ShoxNoCollide(false) end
     _G.AlvaroTP.hittingCooldown = false
     _tpBatHitCooldown           = false
 
-    -- Clean up any legacy worker; no network ownership is changed by TP Bat.
     tpBatStopAntiDie()
-    tpBatStopLagger()
+
+    local meRoot = _G.AlvaroTP.hrp
+    if meRoot and meRoot.Parent then
+        pcall(function()
+            if meRoot.SetNetworkOwner then meRoot:SetNetworkOwner(LP) end
+        end)
+    end
 
     if batDesyncTpSetVisual then batDesyncTpSetVisual(false) end
     updateTpBatButtonVisual(false)
@@ -6346,8 +6084,6 @@ function setupMovementAndIndicators(char)
             else
                 local md = hum.MoveDirection
                 local spd = getActiveMoveSpeed()
-                local scap = ShoxStealCapGet and ShoxStealCapGet()
-                if scap and scap < spd then spd = scap end
                 local dir = nil
                 if md.Magnitude > 0 then
                     lastMoveDir = md
@@ -7169,8 +6905,8 @@ function loadAllSettings()
     local savedBatAimbotSpeed = tonumber(data.batAimbotSpeed)
     -- Migrate the previous built-in default (58) to the faster V30 default.
     -- Other saved values remain user-configurable, within the UI-supported range.
-    if savedBatAimbotSpeed == 58 or savedBatAimbotSpeed == 90 then
-        BAT_AIMBOT_SPEED = 50
+    if savedBatAimbotSpeed == 50 or savedBatAimbotSpeed == 90 then
+        BAT_AIMBOT_SPEED = 58
     elseif savedBatAimbotSpeed then
         BAT_AIMBOT_SPEED = readNumber(savedBatAimbotSpeed, BAT_AIMBOT_SPEED, 1, 200)
     end
@@ -7195,7 +6931,7 @@ function loadAllSettings()
     end
 
     useCarrySystem = data.useCarrySystem or false
-    autoStealVariant = math.floor(_clamp(readNumber(data.autoStealVariant, autoStealVariant or 1, 1, 4), 1, 4))
+    autoStealVariant = math.floor(_clamp(readNumber(data.autoStealVariant, autoStealVariant or 1, 1, 3), 1, 3))
     if autoStealVariantLabel then
         autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant)
     end
@@ -7496,7 +7232,7 @@ function resetToFactoryDefaults()
         ShoxAutoFull = false
         bodyLockOffWhileCarry = true
         autoAfterDrop = "Off"
-        BAT_AIMBOT_SPEED = 50
+        BAT_AIMBOT_SPEED = 58
         dropMode = 1
         stretchEnabled = false
         stretchFOV = 120
@@ -10522,34 +10258,16 @@ ShoxHubAutoTPLastAt = 0
 ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
 
-ShoxHubAutoTPCheckAt = 0
-ShoxATPDbgAt = 0
--- v1.8.0: Auto TP Down nach S2: nur FloorMaterial == Air UND root.Y >= Welt-Y-Grenze, Check alle 0.1s, 0.35s Sperre
+-- v1.9.3: Auto TP Down exakt wie Clean Hub: FloorMaterial == Air UND root.Y >= Hoehe UND 0.35s Abstand
 RunService.Heartbeat:Connect(function()
-    local now = os.clock()
-    if _G.ShoxATPDebug and now - ShoxATPDbgAt >= 1 then
-        ShoxATPDbgAt = now
-        local dc = LP.Character
-        local dr = dc and dc:FindFirstChild("HumanoidRootPart")
-        local dh = dc and dc:FindFirstChildOfClass("Humanoid")
-        if dr and dh then
-            warn(string.format("[ShoxATP] Y=%.2f Floor=%s Ziel-Y=%.2f Grenze=%s", dr.Position.Y, dh.FloorMaterial.Name, ShoxTPDownGroundY, tostring(ShoxHubAutoTPDownHeight)))
-        end
-    end
     if not ShoxHubAutoTPDown then return end
-    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then return end
-    if autoBatEnabled == true or batDesyncTpEnabled == true then return end
-    if now - ShoxHubAutoTPCheckAt < 0.1 or now - ShoxHubAutoTPLastAt < 0.35 then return end
-    ShoxHubAutoTPCheckAt = now
     local ch = LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health <= 0 then return end
-    if hum.FloorMaterial ~= Enum.Material.Air then return end
-    if hum:GetState() == Enum.HumanoidStateType.Seated then return end
-    if root.Position.Y < math.clamp(tonumber(ShoxHubAutoTPDownHeight) or 20, 1, 500) then return end
-    ShoxHubAutoTPLastAt = now
-    doTpDown(false)
+    if root and hum and hum.FloorMaterial == Enum.Material.Air and root.Position.Y >= ShoxHubAutoTPDownHeight and tick() - ShoxHubAutoTPLastAt >= 0.35 then
+        ShoxHubAutoTPLastAt = tick()
+        doTpDown()
+    end
 end)
 
 local function ShoxHubIsCarrying()
