@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.7"
+ShoxHubState.Version     = "v1.9.8"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -2334,7 +2334,7 @@ local function executeSteal(prompt, podName)
             -- v1.9.6: Ablauf 1:1 wie Clean Hub (Hold bis Pausenpunkt -> Warten bis <= 9 Studs -> Rest fuellen -> ausloesen)
             for _, f in ipairs(data.hold) do task.spawn(f) end
             local startTime = _tick()
-            local stealDuration = Steal.StealDuration
+            local stealDuration = Steal.StealDuration * (((autoLeftEnabled or autoRightEnabled) and (tonumber(_G.ShoxAPStealScale) or 0.7)) or 1) -- v1.9.8
             local promptFired = stealDuration * (autoStealVariant == 2 and 0.8 or (autoStealVariant == 3 and 0.9 or 0.73))
             local function resetBar()
                 if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
@@ -4198,6 +4198,31 @@ function ShoxAPFullReturn(side)
             if (fp - rt.Position).Magnitude > 0.01 then rt.CFrame = _CFnew(rt.Position, fp) end
         end
     end
+    -- v1.9.8: Ist der direkte Weg zum ersten Wegpunkt blockiert (Wand), erst eine Pathfinding-Route raus aus der Base,
+    -- danach die normale Liste. Bei Fehler/kein Pfad bleibt alles wie vorher.
+    task.spawn(function()
+        local ch0 = LP.Character
+        local r0 = ch0 and ch0:FindFirstChild("HumanoidRootPart")
+        if not r0 then return end
+        rayP.FilterDescendantsInstances = {ch0}
+        local from, to = r0.Position, list[1]
+        local d0 = _V3new(to.X - from.X, 0, to.Z - from.Z)
+        if d0.Magnitude < 3 or not wallAhead(from, d0.Unit, math.min(d0.Magnitude, 40)) then return end
+        local ok, path = pcall(function()
+            local pth = game:GetService("PathfindingService"):CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true})
+            pth:ComputeAsync(from, to)
+            return pth
+        end)
+        if not ok or not path or path.Status ~= Enum.PathStatus.Success or idx ~= 1 then return end
+        local pts = path:GetWaypoints()
+        if #pts < 2 then return end
+        local nl = {}
+        for i = 2, #pts do nl[#nl + 1] = pts[i].Position end
+        for _, q in ipairs(list) do nl[#nl + 1] = q end
+        list = nl
+        idx = 1
+        table.clear(ShoxAPDist)
+    end)
     conn = RunService.Heartbeat:Connect(function(dt)
         if not (isL and autoLeftEnabled or (not isL) and autoRightEnabled) then
             -- v1.9.5: Toggle aus -> Verbindung trennen statt jeden Frame nur zu returnen
@@ -4849,8 +4874,21 @@ function ShoxTPBatSetNoCollide(char)
             if part:IsA("BasePart") then ShoxTPBatPartsList[#ShoxTPBatPartsList + 1] = part end
         end
     end
+    ShoxTPBatFlipped = ShoxTPBatFlipped or {}
     for _, part in ipairs(ShoxTPBatPartsList) do
-        if part.Parent and part.CanCollide then part.CanCollide = false end
+        if part.Parent and part.CanCollide then
+            ShoxTPBatFlipped[part] = true
+            part.CanCollide = false
+        end
+    end
+end
+-- v1.9.8: beim Ausschalten von TP Bat wieder normal kollidieren
+function ShoxTPBatRestoreCollide()
+    local fl = ShoxTPBatFlipped
+    ShoxTPBatFlipped = {}
+    if not fl then return end
+    for part in pairs(fl) do
+        if part and part.Parent and part.Name ~= "Handle" then pcall(function() part.CanCollide = true end) end
     end
 end
 
@@ -5035,6 +5073,7 @@ end
 
 function stopAlvaroTP()
     batDesyncTpEnabled = false
+    if ShoxTPBatRestoreCollide then ShoxTPBatRestoreCollide() end
     _G.AlvaroTP.on     = false
 
     if batDesyncTpConn then
@@ -6387,7 +6426,7 @@ function setupMovementAndIndicators(char)
         local plist = _GetPlayersCached()
         for i = 1, #plist do
             local p = plist[i]
-            if p ~= LP then
+            if p ~= LP and noPlayerCollisionEnabled then -- v1.9.8: nur mit Toggle
                 local ch = p.Character
                 if ch then
                     local parts = ch:GetChildren()
@@ -10640,7 +10679,7 @@ RunService.Heartbeat:Connect(function()
     end
     if wnow - ShoxAPWallWatch.t >= 0.6 then
         local wmoved = _V3new(wpos.X - ShoxAPWallWatch.pos.X, 0, wpos.Z - ShoxAPWallWatch.pos.Z).Magnitude
-        if wmoved < 3 and not ShoxAPWallParts then
+        if false and wmoved < 3 and not ShoxAPWallParts then -- v1.9.8: No-Clip entfernt
             local wparts = {}
             for _, wp in ipairs(wch:GetChildren()) do
                 if wp:IsA("BasePart") and wp.CanCollide then
