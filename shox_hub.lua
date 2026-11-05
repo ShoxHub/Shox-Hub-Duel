@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.7.5"
+ShoxHubState.Version     = "v1.8.0"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -426,6 +426,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local camera = workspace.CurrentCamera
+-- v1.8.0: CharacterAdded-Handler ueber den Connection-Manager (werden bei Destroy getrennt)
+function ShoxCharAdded(fn) return ShoxHubState:Track(LP.CharacterAdded:Connect(fn)) end
 
 -- v1.6.0: Warn-Throttling gegen Log-Spam aus Loops.
 local _shoxWarnLast = {}
@@ -483,11 +485,9 @@ LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
 BAT_AIMBOT_SPEED = 50
-BYPASS_AIMBOT_SPEED = 60
 MOBILE_PANEL_WIDTH = 128
 MOBILE_PANEL_HEIGHT = 294
 CONFIG_FILE = "FictionHub.json"
-BAT_V2_HIT_DIST = 4.5
 _isDraggingButton = false
 
 backgroundIndex = 1
@@ -528,55 +528,28 @@ local CarrySystem = {
 }
 
 function CarrySystem:isCarrying()
-    local now = _tick()
-    if now - (self._lastCarryCheck or 0) < 0.1 then
-        return self._isCarrying
-    end
-    self._lastCarryCheck = now
-    local char = LP.Character
-    if not char then self._isCarrying = false; return false end
-    -- Carry state is detected only from explicit game attributes/values.
-    -- WalkSpeed is not a reliable carrying signal and caused false positives.
-    local byAttr = false
-    local ok, v = pcall(function() return LP:GetAttribute("Stealing") end)
-    if ok and v == true then byAttr = true end
-    local ok2, v2 = pcall(function() return char:GetAttribute("Stealing") end)
-    if ok2 and v2 == true then byAttr = true end
-    if not byAttr then
-        for _, name in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
-            local obj = char:FindFirstChild(name)
-            if obj then
-                if (obj:IsA("BoolValue") and obj.Value) or
-                   (obj:IsA("ObjectValue") and obj.Value) or
-                   (obj:IsA("StringValue") and obj.Value ~= "") then
-                    byAttr = true; break
-                end
-            end
-        end
-    end
-    self._isCarrying = byAttr
-    return self._isCarrying
+    -- v1.8.0: eine gemeinsame Erkennung (ShoxIsCarrying): reagiert sofort auf Attribut-Events und auf die Steal-Ausloesung
+    local v = (ShoxIsCarrying and ShoxIsCarrying()) or false
+    self._isCarrying = v
+    return v
 end
 
 function CarrySystem:getActiveSpeed()
     if autoLeftEnabled == true or autoRightEnabled == true then
         return self.normalSpeed
     end
+    -- v1.8.0: Lagger-Modi haben Vorrang (vorher hat Auto Carry den gewaehlten Lagger-Speed ueberschrieben)
+    if self.laggerMode == 1 then return self.laggerSpeed end
+    if self.laggerMode == 2 then return self.laggerCarrySpeed end
     if self.softStealEnabled then
         local _, dist = self:getNearestSoftStealAnimal(self.softStealRadius)
-        local inRange = dist and dist <= self.softStealRadius
-        if inRange then
+        -- Soft-Steal-Speed: in Reichweite eines Brainrots ODER sobald du eins traegst (egal wie weit weg)
+        if (dist and dist <= self.softStealRadius) or self:isCarrying() then
             self.softStealLatched = true
             return self.softStealSpeed
         end
-        if self.softStealLatched and self:isCarrying() then
-            return self.softStealSpeed
-        else
-            self.softStealLatched = false
-        end
+        self.softStealLatched = false
     end
-    if self.laggerMode == 1 then return self.laggerSpeed end
-    if self.laggerMode == 2 then return self.laggerCarrySpeed end
     if self.speedToggled then return self.carrySpeed end
     return self.normalSpeed
 end
@@ -585,15 +558,14 @@ function CarrySystem:getStatus()
     if autoLeftEnabled == true or autoRightEnabled == true then
         return "NORMAL", self.normalSpeed
     end
+    if self.laggerMode == 1 then return "LAGGER", self.laggerSpeed end
+    if self.laggerMode == 2 then return "LAGGER CARRY", self.laggerCarrySpeed end
     if self.softStealEnabled then
         local _, dist = self:getNearestSoftStealAnimal(self.softStealRadius)
-        local inRange = dist and dist <= self.softStealRadius
-        if inRange or (self.softStealLatched and self:isCarrying()) then
+        if (dist and dist <= self.softStealRadius) or self:isCarrying() then
             return "AUTO CARRY", self.softStealSpeed
         end
     end
-    if self.laggerMode == 1 then return "LAGGER", self.laggerSpeed end
-    if self.laggerMode == 2 then return "LAGGER CARRY", self.laggerCarrySpeed end
     if self.speedToggled then return "CARRY", self.carrySpeed end
     return "NORMAL", self.normalSpeed
 end
@@ -657,7 +629,7 @@ function CarrySystem:startSoftStealScanner()
     self._softStealScanner = RunService.Heartbeat:Connect(function()
         if not self._softStealScanning then return end
         local now = _tick()
-        if now - (self._lastSoftStealScan or 0) >= 1.25 then
+        if now - (self._lastSoftStealScan or 0) >= 0.6 then
             self._lastSoftStealScan = now
             self:scanSoftStealAnimals()
         end
@@ -711,12 +683,10 @@ function CarrySystem:updateMovement(dt)
 
     -- Only one system may write movement physics at a time.
     -- Auto Left/Right and the combat controllers own velocity while active.
-    local batBypass = _G.SnowVS and _G.SnowVS.BatBypass
     local externallyControlled =
         autoLeftEnabled == true or autoRightEnabled == true
-        or autoBatEnabled == true or autoBatV2Enabled == true
+        or autoBatEnabled == true
         or batDesyncTpEnabled == true or dropActive == true
-        or (batBypass and batBypass.Enabled == true)
     if externallyControlled then
         local lv = self._lvBoost
         if lv then
@@ -991,9 +961,6 @@ function updateAllUIThemeColors(color)
         end
     end
     if gui then searchAndUpdateText(gui) end
-    if batV2FloatingButton then
-        paintFloatingBtn(batV2FloatingButton:FindFirstChild("Frame"), autoBatV2Enabled)
-    end
     for _, tab in ipairs(tabButtons or {}) do
         if tab and tab.Parent and oldColor and tab.TextColor3 == oldColor then tab.TextColor3 = color end
     end
@@ -1505,7 +1472,6 @@ function _shoxLayoutResetOnce()
         end
     end)
 end
-batV2FloatingPos = nil
 instaResetFloatingPos = nil
 instaResetFloatingButton = nil
 
@@ -1523,44 +1489,8 @@ tryardHeartbeatConn = nil
 animSelectorLabel = nil
 
 -- ═══════════════════════════════════════════════════════════════
--- BAT BYPASS (antes Anti Bypass Aimbot) — Persecución con predicción de ping
--- ═══════════════════════════════════════════════════════════════
-autoBatV2Enabled      = false
-autoBatV2SetVisual    = nil
-
-selectedAimbotMode    = "Normal"
-autoSwingEnabled      = false
-
-_G.AceAntiBypassAimbotSpeed       = _G.AceAntiBypassAimbotSpeed or 60
-_G.AceAntiBypassLaggerAimbotSpeed = _G.AceAntiBypassLaggerAimbotSpeed or 40
-_G.AceAntiBypassAimbotOn          = _G.AceAntiBypassAimbotOn or false
-_G.AceNormalAimbotOn              = _G.AceNormalAimbotOn or false
-_G.AceCurrentSpeedMode            = _G.AceCurrentSpeedMode or "Normal"
-
-
-
-_G.AceAntiBypassSlapList = _G.AceAntiBypassSlapList or {
-    "Bat", "Slap", "Iron Slap", "Gold Slap", "Diamond Slap",
-    "Emerald Slap", "Ruby Slap", "Dark Matter Slap",
-    "Flame Slap", "Nuclear Slap", "Galaxy Slap", "Glitched Slap"
-}
-
--- Resolve the Safe Mode function at call time; its implementation is defined later.
-_G.AceSafeModeTryStart = function(...)
-    local safeModeStart = _G.AmbitiousSafeModeTryStart
-    if type(safeModeStart) ~= "function" then return false end
-    return safeModeStart(...)
-end
-_G.AceStopAutoTPForAction   = _G.AceStopAutoTPForAction   or function()
-    if batDesyncTpEnabled and type(stopBatDesyncTp) == "function" then
-        stopBatDesyncTp()
-    end
-end
-_G.AceStopNormalAimbot      = _G.AceStopNormalAimbot      or function()
-    if autoBatEnabled and type(disableAutoBat) == "function" then
-        disableAutoBat()
-    end
-end
+-- v1.8.0: Bat Bypass entfernt (im Bat Aimbot aufgegangen)
+_G.AceCurrentSpeedMode = _G.AceCurrentSpeedMode or "Normal"
 
 useCarrySystem = false
 lastMoveDir = _V3zero
@@ -1570,7 +1500,6 @@ tpBatVersion = 1
 tpBatVersionLabel = nil
 tpBatVersionPill = nil
 tpBatDistanceBox = nil
-_G.__tpBatV2Distance = 8
 
 local CoreGui = game:GetService("CoreGui")
 
@@ -1955,7 +1884,7 @@ local function _shoxRestoreNativeJumpControls(character)
 end
 
 _shoxRestoreNativeJumpControls(LP.Character)
-LP.CharacterAdded:Connect(function(character)
+ShoxCharAdded(function(character)
     task.wait(0.25)
     _shoxRestoreNativeJumpControls(character)
 end)
@@ -1997,7 +1926,7 @@ end
 local function _applyVelocitySpeed(dir, speed, hrp)
     if not hrp or not hrp.Parent then return end
     if tick() < _globalMovementLock then return end
-    if autoBatV2Enabled or batDesyncTpEnabled or autoBatEnabled then return end
+    if batDesyncTpEnabled or autoBatEnabled or dropActive == true then return end
     if dir and dir.Magnitude > 0.05 then
         local unit = dir.Unit
         local vy = hrp.AssemblyLinearVelocity.Y
@@ -2136,7 +2065,6 @@ DEFAULT_KB = {
     CarryToggle  = {kb = Enum.KeyCode.Q, gp = nil},
     LaggerMode   = {kb = Enum.KeyCode.R, gp = nil},
     TPBat        = {kb = Enum.KeyCode.X, gp = nil},
-    BatV2        = {kb = Enum.KeyCode.V, gp = nil},
     InstaReset   = {kb = Enum.KeyCode.H, gp = nil},
 }
 
@@ -2150,7 +2078,6 @@ KB = {
     CarryToggle  = {kb = DEFAULT_KB.CarryToggle.kb, gp = DEFAULT_KB.CarryToggle.gp},
     LaggerMode   = {kb = DEFAULT_KB.LaggerMode.kb, gp = DEFAULT_KB.LaggerMode.gp},
     TPBat        = {kb = DEFAULT_KB.TPBat.kb, gp = DEFAULT_KB.TPBat.gp},
-    BatV2        = {kb = DEFAULT_KB.BatV2.kb, gp = DEFAULT_KB.BatV2.gp},
     InstaReset   = {kb = DEFAULT_KB.InstaReset.kb, gp = DEFAULT_KB.InstaReset.gp},
 }
 
@@ -2237,7 +2164,7 @@ local function getPlotsRoot()
     return _plotsCache
 end
 
-local function isMyPlotByName(plotName)
+function ShoxMyPlotRaw(plotName)
     local plotsRoot = getPlotsRoot()
     if not plotsRoot then return false end
     local plot = plotsRoot:FindFirstChild(plotName)
@@ -2257,6 +2184,17 @@ local function isMyPlotByName(plotName)
     return false
 end
 
+-- v1.8.0: Ergebnis 3s cachen (vorher GetDescendants() pro Plot bei JEDEM Scan)
+ShoxMyPlotCache = {}
+local function isMyPlotByName(plotName)
+    local c = ShoxMyPlotCache[plotName]
+    local nowC = os.clock()
+    if c and nowC - c.t < 3 then return c.v end
+    local v = ShoxMyPlotRaw(plotName) == true
+    ShoxMyPlotCache[plotName] = {t = nowC, v = v}
+    return v
+end
+
 local _nearestPromptCache = { time = 0, prompt = nil, name = nil, position = nil, valid = false }
 local function findNearestPrompt()
     local char = LP.Character
@@ -2268,8 +2206,8 @@ local function findNearestPrompt()
     local nearestPrompt, nearestDist, nearestName = nil, _huge, nil
     local rpos = root.Position
     local cached = _nearestPromptCache
-    if cached.valid and cached.position and _tick() - cached.time < 0.12
-       and (rpos - cached.position).Magnitude < 4 then
+    if cached.valid and cached.position and _tick() - cached.time < 0.05
+       and (rpos - cached.position).Magnitude < 3 then
         if cached.prompt and cached.prompt.Parent then
             return cached.prompt, cached.name
         elseif cached.prompt == nil then
@@ -2371,7 +2309,7 @@ local function executeSteal(prompt, podName)
         local duration = Steal.StealDuration
         -- v1.7.2: echte Hold-Dauer des Prompts nutzen (alle 3 Versionen skalieren damit)
         local hd = prompt.HoldDuration
-        if type(hd) == "number" and hd >= 0.3 and hd <= 3 then duration = hd end
+        if type(hd) == "number" and hd >= 0.1 and hd <= 5 then duration = hd end
         local stopTime = getAutoGrabStopTime(duration)
         local promptFired = false
         -- Normal (1) = durchgehender Hold ohne Pause; Semi (2) / Semi Normal (3) pausieren vor dem Ende
@@ -2393,8 +2331,8 @@ local function executeSteal(prompt, podName)
             if progressFill then progressFill.Size = UDim2.new(stopProgress, 0, 1, 0) end
             if progressPct then progressPct.Text = _floor(stopProgress * 100) .. "%" end
             local phase2Timeout = math.max(2.99 - stopTime - math.max(duration - stopTime, 0), 0.05)
-            if phase2Timeout > 5 then phase2Timeout = 5 end
-            if autoStealVariant == 3 then phase2Timeout = 0.6 end
+            if phase2Timeout > 2 then phase2Timeout = 2 end
+            if autoStealVariant == 3 then phase2Timeout = 0.45 end
             local phase2Start = _tick()
             while isStealing and Steal.AutoStealEnabled do
                 if _tick() - phase2Start >= phase2Timeout then
@@ -2437,7 +2375,8 @@ local function executeSteal(prompt, podName)
             end
             if isStealing and Steal.AutoStealEnabled then
                 local fillStart = _tick()
-                local fillDuration = math.max(duration - stopTime, 0.05)
+                -- v1.8.0: schon gewartete Zeit zaehlt zur Hold-Dauer (Hold lief seit t=0) -> nicht nochmal komplett fuellen
+                local fillDuration = math.max(duration - stopTime - (fillStart - phase2Start), 0.05)
                 while true do
                     local fp = _clamp((_tick() - fillStart) / fillDuration, 0, 1)
                     local totalProgress = stopProgress + fp * (1 - stopProgress)
@@ -2445,6 +2384,7 @@ local function executeSteal(prompt, podName)
                     if progressPct then progressPct.Text = _floor(totalProgress * 100) .. "%" end
                     if fp >= 1 and not promptFired then
                         promptFired = true
+                        if ShoxMarkStealStart then ShoxMarkStealStart() end
                         pcall(function()
                             for _, f in ipairs(data.trigger) do task.spawn(f) end
                             if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
@@ -2467,6 +2407,7 @@ local function executeSteal(prompt, podName)
                 if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius then break end
                 if elapsed >= duration and not promptFired then
                     promptFired = true
+                    if ShoxMarkStealStart then ShoxMarkStealStart() end
                     pcall(function()
                         for _, f in ipairs(data.trigger) do task.spawn(f) end
                         if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
@@ -2512,7 +2453,7 @@ function startAutoSteal()
         if ShoxIsCarrying and ShoxIsCarrying() then return end -- v1.7.3: nichts versuchen, waehrend du traegst
         -- v1.7.2: kurzer Cooldown zwischen Versuchen (kein Spam pro Frame)
         local nowS = os.clock()
-        if nowS - (ShoxStealLastTry or 0) < 0.08 then return end
+        if nowS - (ShoxStealLastTry or 0) < 0.03 then return end
         local p, n = findNearestPrompt()
         if p then ShoxStealLastTry = nowS; executeSteal(p, n) end
     end)
@@ -2554,7 +2495,6 @@ _prevAutoRotate = nil
 tpBatConn = nil
 tpBatPrevAutoRotate = nil
 TP_BAT_SWING_CD = 0.08
-batV2FloatingButton = nil
 
 enemySpeedConn = nil
 movementLoop = nil
@@ -2584,7 +2524,6 @@ setAntiDieVisual = nil
 setEditModeVisual = nil
 setESPVIsual = nil
 mobSetAutoBat, mobSetAutoLeft, mobSetAutoRight, mobSetDropBR, mobSetTpDown, mobSetCarry, mobSetLagger1, mobSetLagger2 = nil, nil, nil, nil, nil, nil, nil, nil
-autoBatV2SetVisual = nil
 miniBtn, main, gui = nil, nil, nil
 MobilePanel = nil
 instaResetFloatingButton = nil
@@ -2684,27 +2623,8 @@ function ShoxGetGroundHit(char, root)
             if p.Character and p.Character ~= char then table.insert(ignore, p.Character) end
         end
         ShoxGroundParams.FilterDescendantsInstances = ignore
-        ShoxGroundIgnore = ignore
     end
-    -- v1.7.5: fast unsichtbare Teile (Transparency >= 0.95, z.B. Barrieren/Trigger) zaehlen nicht als Boden.
-    -- Findet sich nichts anderes, wird der erste Treffer trotzdem genutzt.
-    local origin, dir = root.Position, Vector3.new(0, -2000, 0)
-    local firstHit, extra = nil, nil
-    for _ = 1, 4 do
-        local hit = workspace:Raycast(origin, dir, ShoxGroundParams)
-        if not hit then break end
-        firstHit = firstHit or hit
-        local inst = hit.Instance
-        if inst:IsA("Terrain") or inst.Transparency < 0.95 then
-            if extra then ShoxGroundParams.FilterDescendantsInstances = ShoxGroundIgnore end
-            return hit
-        end
-        extra = extra or table.clone(ShoxGroundIgnore)
-        table.insert(extra, inst)
-        ShoxGroundParams.FilterDescendantsInstances = extra
-    end
-    if extra then ShoxGroundParams.FilterDescendantsInstances = ShoxGroundIgnore end
-    return firstHit
+    return workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), ShoxGroundParams)
 end
 
 function ShoxGetStandOffset(humanoid, root)
@@ -2715,37 +2635,39 @@ function ShoxGetStandOffset(humanoid, root)
     return hip + (root.Size.Y * 0.5) + 0.05
 end
 
-local function doTpDown()
+-- v1.8.0: TP Down nach S2-Vorbild: festes Ziel-Y, KEIN Raycast, keine Fall-Velocity-Bedingung.
+-- ShoxTPDownGroundY = Y der HumanoidRootPart am Boden (S2 nutzt -7.00). Im Spiel pruefen: _G.ShoxATPDebug = true
+ShoxTPDownGroundY = -7.00
+function doTpDown(force)
     local ok, err = pcall(function()
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         local humanoid = char:FindFirstChildOfClass("Humanoid")
         if not root or not humanoid or humanoid.Health <= 0 then return end
-
-        local hit = ShoxGetGroundHit(char, root)
-        if not hit then return end
-
-        local targetY = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
-        if root.Position.Y - targetY < 3 then return end -- schon am Boden
-
-        -- v1.7.1: KEIN Movement-Lock mehr (er schaltete die LinearVelocity ab -> Speed-Einbruch).
-        -- Die LV steuert nur X/Z, Y bleibt frei. Rotation und horizontales Tempo bleiben erhalten.
-        local cf = root.CFrame
+        if force ~= true then
+            if humanoid.FloorMaterial ~= Enum.Material.Air then return end
+            if root.Position.Y < math.clamp(tonumber(ShoxHubAutoTPDownHeight) or 20, 1, 500) then return end
+        end
+        local pos = root.Position
+        local _, yaw = root.CFrame:ToEulerAnglesYXZ()
+        if _G.ShoxATPDebug then
+            warn(string.format("[ShoxATP] TP von Y=%.2f -> Y=%.2f (%s)", pos.Y, ShoxTPDownGroundY, force == true and "manuell" or "auto"))
+        end
+        root.CFrame = CFrame.new(pos.X, ShoxTPDownGroundY, pos.Z) * CFrame.Angles(0, yaw, 0)
+        -- horizontales Tempo bleibt (sonst Speed-Einbruch, die Speed-Systeme setzen X/Z ohnehin jeden Frame neu)
         local lv = root.AssemblyLinearVelocity
-        root.CFrame = CFrame.new(cf.X, targetY, cf.Z) * cf.Rotation
         root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
-        root.AssemblyAngularVelocity = _V3zero
+        root.AssemblyAngularVelocity = Vector3.zero
     end)
     if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
 
--- ═══════════════════════════════════════════════════════════════
 -- MIRROR TP DOWN
 -- ═══════════════════════════════════════════════════════════════
 do
     local MIRROR_TP_DROP_THRESHOLD = 3
-    local MIRROR_TP_DOWN_Y         = -7.00
+    local MIRROR_TP_DOWN_Y         = ShoxTPDownGroundY
     local mirrorTPPreviousY        = {}
     local mirrorTPLastTeleport     = 0
     local mirrorTPCharOf           = {}
@@ -2757,11 +2679,9 @@ do
 
     local function mirrorTPAimbotActive()
         return (_G.AmbitiousNormalAimbotOn == true)
-            or (_G.AmbitiousBatAimbotV2On == true)
             or (_G.AmbitiousTPBatOn == true)
             or (_G.AlvaroTP and _G.AlvaroTP.on == true)
             or (autoBatEnabled == true)
-            or (autoBatV2Enabled == true)
             or (batDesyncTpEnabled == true)
     end
 
@@ -2921,7 +2841,6 @@ end
 function _G.AmbitiousSafeModeForceStop(reason)
     local stopped = false
     if autoBatEnabled and disableAutoBat then disableAutoBat(); stopped = true end
-    if autoBatV2Enabled and disableBatV2 then disableBatV2(); stopped = true end
     if batDesyncTpEnabled and stopBatDesyncTp then stopBatDesyncTp(); stopped = true end
     if autoLeftEnabled then
         autoLeftEnabled = false
@@ -3755,10 +3674,17 @@ bodyLockCarrySetVisual = nil
 ShoxBLTarget = nil
 ShoxBLPickT = 0
 ShoxCarryCache = {t = 0, v = false}
+ShoxCarryPendingUntil = 0
+
+-- v1.8.0: wird beim Ausloesen des Steals aufgerufen -> Carry gilt sofort (bis das Attribut "Stealing" repliziert ist)
+function ShoxMarkStealStart(secs)
+    ShoxCarryPendingUntil = os.clock() + (tonumber(secs) or 0.9)
+    ShoxCarryCache.t = 0
+end
 
 function ShoxIsCarrying()
     local now = os.clock()
-    if now - ShoxCarryCache.t < 0.1 then return ShoxCarryCache.v end
+    if now - ShoxCarryCache.t < 0.05 then return ShoxCarryCache.v end
     ShoxCarryCache.t = now
     local v = false
     local char = LP.Character
@@ -3774,9 +3700,30 @@ function ShoxIsCarrying()
                 break
             end
         end
+        if not v then
+            for _, ch in ipairs(char:GetChildren()) do
+                if ch:IsA("Model") and ch:GetAttribute("IsCarried") == true then v = true; break end
+            end
+        end
+    end
+    if v then
+        ShoxCarryPendingUntil = 0 -- echt bestaetigt
+    elseif now < ShoxCarryPendingUntil then
+        v = true
     end
     ShoxCarryCache.v = v
     return v
+end
+
+-- Attribut-Events: Cache sofort verwerfen, damit Carry nicht bis zu 0.1s zu spaet erkannt wird
+do
+    local function bump() ShoxCarryCache.t = 0 end
+    ShoxHubState:Track(LP:GetAttributeChangedSignal("Stealing"):Connect(bump))
+    local function hook(c)
+        if c then ShoxHubState:Track(c:GetAttributeChangedSignal("Stealing"):Connect(bump)) end
+    end
+    hook(LP.Character)
+    ShoxCharAdded(hook)
 end
 
 function _blValidTarget(tRoot)
@@ -3942,7 +3889,7 @@ function _unsuppressBodyLock(delayed)
     end
 end
 
-LP.CharacterAdded:Connect(function()
+ShoxCharAdded(function()
     if stopBatCounter then pcall(stopBatCounter) end
     _blSuppressCount = 0
     _blWasEnabled = false
@@ -4138,6 +4085,18 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     root.AssemblyLinearVelocity = _V3new(smoothed.X, current.Y, smoothed.Z)
 end
 
+-- v1.8.0: Wegpunkt-Check ohne Verfehlen (bei 60 Studs/s und 30 FPS sind es 2 Studs pro Frame; "< 1" wurde oft uebersprungen)
+ShoxAPDist = {}
+function ShoxAPReached(key, root, tgt, dt, spd)
+    local d = (tgt - root.Position).Magnitude
+    local last = ShoxAPDist[key]
+    ShoxAPDist[key] = d
+    local step = (tonumber(spd) or 0) * (tonumber(dt) or 0.016)
+    if d < math.max(1, step * 1.25) then ShoxAPDist[key] = nil; return true end
+    if last and d > last + 0.05 and last < math.max(3, step * 2) then ShoxAPDist[key] = nil; return true end
+    return false
+end
+
 function stopAutoLeft()
     autoLeftEnabled = false
     if alConn then alConn:Disconnect(); alConn = nil end
@@ -4174,6 +4133,7 @@ function startAutoLeft()
     _suppressBodyLock()
     if alConn then alConn:Disconnect() end
     alPhase = 1
+    table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.L1 - (LP.Character and LP.Character:GetPivot().Position or AP.L1)).Magnitude + (AP.L2 - AP.L1).Magnitude
     local routeTimeout = math.clamp(routeLength / math.max(math.abs(tonumber(NS) or 0), 1) * 3 + 8, 12, 180)
@@ -4196,7 +4156,7 @@ function startAutoLeft()
         local spd = math.max(0, tonumber(NS) or 0)
         if alPhase == 1 then
             local tgt = _V3new(AP.L1.X, root.Position.Y, AP.L1.Z)
-            if (tgt - root.Position).Magnitude < 1 then
+            if ShoxAPReached("L1", root, tgt, dt, spd) then
                 alPhase = 2
                 local d = AP.L2 - root.Position
                 local mv = _V3new(d.X, 0, d.Z)
@@ -4212,7 +4172,7 @@ function startAutoLeft()
             applyAutoPathVelocity(root, mv, spd, dt)
         elseif alPhase == 2 then
             local tgt = _V3new(AP.L2.X, root.Position.Y, AP.L2.Z)
-            if (tgt - root.Position).Magnitude < 1 then
+            if ShoxAPReached("L2", root, tgt, dt, spd) then
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -4273,6 +4233,7 @@ function startAutoRight()
     _suppressBodyLock()
     if arConn then arConn:Disconnect() end
     arPhase = 1
+    table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.R1 - (LP.Character and LP.Character:GetPivot().Position or AP.R1)).Magnitude + (AP.R2 - AP.R1).Magnitude
     local routeTimeout = math.clamp(routeLength / math.max(math.abs(tonumber(NS) or 0), 1) * 3 + 8, 12, 180)
@@ -4295,7 +4256,7 @@ function startAutoRight()
         local spd = math.max(0, tonumber(NS) or 0)
         if arPhase == 1 then
             local tgt = _V3new(AP.R1.X, root.Position.Y, AP.R1.Z)
-            if (tgt - root.Position).Magnitude < 1 then
+            if ShoxAPReached("R1", root, tgt, dt, spd) then
                 arPhase = 2
                 local d = AP.R2 - root.Position
                 local mv = _V3new(d.X, 0, d.Z)
@@ -4311,7 +4272,7 @@ function startAutoRight()
             applyAutoPathVelocity(root, mv, spd, dt)
         elseif arPhase == 2 then
             local tgt = _V3new(AP.R2.X, root.Position.Y, AP.R2.Z)
-            if (tgt - root.Position).Magnitude < 1 then
+            if ShoxAPReached("R2", root, tgt, dt, spd) then
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -4441,6 +4402,12 @@ function ShoxPickChaseTarget(root, current)
     return best
 end
 
+-- v1.8.0: ULTIMATIVER BAT AIMBOT (Aimbot + Bat Bypass + TP Bat in einem):
+--  weit (> 10 Studs): Anlauf per Velocity auf den Abfangpunkt (Ziel-Tempo aus Positionsdifferenz + Ping-Vorhalt)
+--  nah (<= 10 Studs): CFrame-Snap 3.2 Studs vor das vorausberechnete Ziel (Ping-Vorhalt), Blick aufs Ziel;
+--  eigenes Tempo = Ziel-Tempo (begrenzt) -> bleibt dran, wird nicht weggeschleudert. Swing nur nach dem Snap.
+ShoxAimbotLastPos = nil
+ShoxAimbotVel = _V3zero
 function startAimbotAdapt()
     if _aimbotConn then return end
     _suppressBodyLock()
@@ -4450,8 +4417,11 @@ function startAimbotAdapt()
         hum0.AutoRotate = false
     end
     ShoxAimbotTarget = nil
+    ShoxAimbotLastPos = nil
+    ShoxAimbotVel = _V3zero
     _aimbotConn = RunService.RenderStepped:Connect(function(dt)
         if not autoBatEnabled then return end
+        if _tick() < _globalMovementLock then return end
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
@@ -4469,56 +4439,67 @@ function startAimbotAdapt()
         end
 
         local target = ShoxPickChaseTarget(root, ShoxAimbotTarget)
-        ShoxAimbotTarget = target
+        if target ~= ShoxAimbotTarget then
+            ShoxAimbotTarget = target
+            ShoxAimbotLastPos = nil
+            ShoxAimbotVel = _V3zero
+        end
         if not target then return end
 
         local safeDt = _clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
         local myPos, tPos = root.Position, target.Position
-        local tv = target.AssemblyLinearVelocity
-        local flatV = _V3new(tv.X, 0, tv.Z)
+        -- Ziel-Tempo aus Positionsdifferenz (das, was dein Client wirklich sieht); Teleports/Flings verwerfen
+        if ShoxAimbotLastPos then
+            local raw = (tPos - ShoxAimbotLastPos) / safeDt
+            local rf = _V3new(raw.X, 0, raw.Z)
+            if rf.Magnitude < 300 then
+                ShoxAimbotVel = ShoxAimbotVel:Lerp(rf, 1 - math.exp(-safeDt * 14))
+            end
+        end
+        ShoxAimbotLastPos = tPos
+        local flatV = ShoxAimbotVel
         if flatV.Magnitude > 80 then flatV = flatV.Unit * 80 end
+        if flatV.Magnitude < 1.5 then flatV = _V3zero end
 
         local speed = _clamp(tonumber(BAT_AIMBOT_SPEED) or 50, 1, 200)
+        local ping = ShoxGetPingSec()
         local dx, dz = tPos.X - myPos.X, tPos.Z - myPos.Z
         local flatDist = _sqrt(dx * dx + dz * dz)
-        -- Abfangpunkt: Zeit bis zum Ziel + halber Ping (statt fester 0.14s + Offset)
-        local lead = _clamp(flatDist / math.max(speed, 10), 0, 0.3) + _clamp(ShoxGetPingSec() * 0.5, 0, 0.1)
-        local px = tPos.X + flatV.X * lead - myPos.X
-        local pz = tPos.Z + flatV.Z * lead - myPos.Z
-        local pm = _sqrt(px * px + pz * pz)
-
-        -- v1.7.4: Abstand halten (3.5 Studs), weich abbremsen, nie in den Gegner druecken
-        local desired
-        if pm <= 3.5 then
-            desired = flatV
-        else
-            local f = math.min(speed, (pm - 3.5) * 12 + flatV.Magnitude)
-            desired = _V3new(px / pm * f, 0, pz / pm * f)
-        end
-
-        -- Nur X/Z setzen; Y bleibt Physik (vorher: dauerhaft +45 Y nach oben -> Fliegen/Zittern)
         local cv = root.AssemblyLinearVelocity
-        local alpha = 1 - math.exp(-safeDt * 22)
-        root.AssemblyLinearVelocity = _V3new(
-            cv.X + (desired.X - cv.X) * alpha,
-            cv.Y,
-            cv.Z + (desired.Z - cv.Z) * alpha
-        )
-        if tPos.Y - myPos.Y > 6 and hum.FloorMaterial ~= Enum.Material.Air then
-            hum.Jump = true
-        end
 
-        -- Nur Yaw drehen (vorher Roll/Pitch-Angularvelocity -> Kippen)
-        if flatDist > 0.5 then
+        if flatDist > 10 then
+            -- Anlauf: Abfangpunkt = Zeit bis zum Ziel + Ping-Anteil, 3.5 Studs Standoff, weich abbremsen
+            local lead = _clamp(flatDist / math.max(speed, 10), 0, 0.35) + _clamp(ping * 0.6, 0, 0.15)
+            local px = tPos.X + flatV.X * lead - myPos.X
+            local pz = tPos.Z + flatV.Z * lead - myPos.Z
+            local pm = _sqrt(px * px + pz * pz)
+            local f = math.min(speed, (pm - 3.5) * 12 + flatV.Magnitude)
+            local desired = pm > 0.01 and _V3new(px / pm * f, 0, pz / pm * f) or flatV
+            local alpha = 1 - math.exp(-safeDt * 22)
+            -- Nur X/Z setzen; Y bleibt Physik
+            root.AssemblyLinearVelocity = _V3new(cv.X + (desired.X - cv.X) * alpha, cv.Y, cv.Z + (desired.Z - cv.Z) * alpha)
+            -- Nur Yaw drehen (kein Kippen)
             local goalYaw = math.atan2(-dx, -dz)
             local _, curYaw = root.CFrame:ToEulerAnglesYXZ()
             local dYaw = (goalYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
             local ra = _clamp(1 - math.exp(-safeDt * 30), 0.35, 1)
             root.CFrame = CFrame.new(myPos) * CFrame.Angles(0, curYaw + dYaw * ra, 0)
             root.AssemblyAngularVelocity = _V3zero
+        else
+            -- Nahbereich: Snap auf deine Seite, 3.2 Studs vor das vorausberechnete Ziel, Blick aufs Ziel
+            local l2 = _clamp(ping + 0.08, 0.05, 0.3)
+            local ax, az = tPos.X + flatV.X * l2, tPos.Z + flatV.Z * l2
+            local bx, bz = myPos.X - ax, myPos.Z - az
+            local bm = _sqrt(bx * bx + bz * bz)
+            if bm < 0.1 then bx, bz, bm = 0, 1, 1 end
+            root.CFrame = CFrame.lookAt(_V3new(ax + bx / bm * 3.2, myPos.Y, az + bz / bm * 3.2), _V3new(ax, myPos.Y, az))
+            root.AssemblyLinearVelocity = _V3new(flatV.X, cv.Y, flatV.Z)
+            root.AssemblyAngularVelocity = _V3zero
+            if _abs(tPos.Y - myPos.Y) <= 6 then trySwing() end
         end
-
-        if flatDist <= 7 and _abs(tPos.Y - myPos.Y) <= 6 then trySwing() end
+        if tPos.Y - myPos.Y > 6 and hum.FloorMaterial ~= Enum.Material.Air then
+            hum.Jump = true
+        end
     end)
 end
 
@@ -4546,7 +4527,6 @@ function enableAutoBat()
         stopAutoRight()
     end
     if batDesyncTpEnabled then toggleBatDesyncTp() end
-    if autoBatV2Enabled then disableBatV2() end
     autoBatEnabled = true
     if autoBatSetVisual then autoBatSetVisual(true) end
     if mobSetAutoBat then mobSetAutoBat(true) end
@@ -4554,471 +4534,8 @@ function enableAutoBat()
 end
 
 -- ═══════════════════════════════════════════════════════════════
--- BAT BYPASS — Persecución autónoma con predicción de ping
--- (Reemplaza el módulo Anti Bypass anterior. Antes BAT V2.)
--- ═══════════════════════════════════════════════════════════════
+-- v1.8.0: Bat Bypass entfernt (Modul, Compat-Wrapper, Toggle, Keybind, Config). Alles im Bat Aimbot.
 
-BAT_V2_SPEED           = BAT_V2_SPEED           or 55
-BAT_V2_HIT_DIST        = BAT_V2_HIT_DIST        or 4.5
-BAT_V2_LEAD_STUDS      = BAT_V2_LEAD_STUDS      or 3
-BAT_V2_BODY_LOCK_RANGE = BAT_V2_BODY_LOCK_RANGE or 60
-
-local SnowVS = _G.SnowVS or {}
-_G.SnowVS = SnowVS
-
-SnowVS.BatBypass = SnowVS.BatBypass or {}
--- Alias legado para no romper referencias externas existentes
-SnowVS.AimbotBypassV2 = SnowVS.BatBypass
-
-local BB = SnowVS.BatBypass
-
-BB.Enabled    = BB.Enabled    or false
-BB.Connection = BB.Connection or nil
-
-BB.Z = BB.Z or {
-    targetPlayer          = nil,
-    lastTargetPos         = nil,
-    targetVelocity        = Vector3.zero,
-    smoothedVelocity      = Vector3.zero,
-    velocityHistory       = {},
-    accelerationHistory   = {},
-    aerialVelocityHistory = {},
-    previousDirection     = nil,
-    lastDirectionChangeTime = 0,
-    airborneTime          = 0,
-    lastActivationTime    = 0,
-    currentPing           = 0.1,
-    realPingMs            = 0,
-}
-
-BB.ZCFG = BB.ZCFG or {
-    FOLLOW_SPEED                    = BAT_V2_SPEED,
-    ACTIVATE_DISTANCE               = BAT_V2_HIT_DIST,
-    MIN_FOLLOW_DISTANCE             = 1,
-    PREDICTION_TIME                 = 0.22,
-    PREDICT_AHEAD                   = BAT_V2_LEAD_STUDS,
-    MAX_VELOCITY_CHANGE             = 150,
-    VELOCITY_SMOOTHING              = 0.2,
-    MAX_HORIZONTAL_VELOCITY         = 80,
-    SERVER_TICKRATE                 = 1 / 60,
-    MIN_PING_COMPENSATION           = 0.03,
-    MAX_PING_COMPENSATION           = 0.25,
-    ACCELERATION_PREDICTION_WEIGHT  = 0.3,
-    DIRECTION_CHANGE_DETECTION_TIME = 0.12,
-    QUICK_DIRECTION_CHANGE_MULTIPLIER = 1.5,
-    GRAVITY                         = 196.2,
-    AIR_CONTROL_FACTOR              = 0.8,
-    MIN_AIRBORNE_TIME               = 0.08,
-}
-
-local function bbAverageVector(history)
-    if #history == 0 then return Vector3.zero end
-    local total = Vector3.zero
-    for _, v in ipairs(history) do total += v end
-    return total / #history
-end
-
-local function bbPushHistory(history, value, maximum)
-    table.insert(history, value)
-    if #history > maximum then table.remove(history, 1) end
-end
-
-function BB.FindBat()
-    local char = LP.Character
-    if not char then return nil end
-    local equipped = char:FindFirstChildOfClass("Tool")
-    if equipped then
-        local n = equipped.Name:lower()
-        if n:find("bat", 1, true) or n:find("slap", 1, true) then
-            return equipped
-        end
-    end
-    local bp = LP:FindFirstChildOfClass("Backpack")
-    if bp then
-        for _, tool in ipairs(bp:GetChildren()) do
-            if tool:IsA("Tool") then
-                local n = tool.Name:lower()
-                if n:find("bat", 1, true) or n:find("slap", 1, true) then
-                    return tool
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function bbResetTarget()
-    local Z = BB.Z
-    Z.targetPlayer          = nil
-    Z.lastTargetPos         = nil
-    Z.targetVelocity        = Vector3.zero
-    Z.smoothedVelocity      = Vector3.zero
-    Z.velocityHistory       = {}
-    Z.accelerationHistory   = {}
-    Z.aerialVelocityHistory = {}
-    Z.previousDirection     = nil
-    Z.airborneTime          = 0
-end
-
-local function bbNearestTarget(root)
-    local nearest, nearestDistance = nil, math.huge
-    for _, candidate in ipairs(_GetPlayersCached()) do
-        if candidate ~= LP and candidate.Character then
-            local targetCharacter = candidate.Character
-            local targetRoot     = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-            local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
-            if targetRoot and targetHumanoid and targetHumanoid.Health > 0 then
-                local distance = (root.Position - targetRoot.Position).Magnitude
-                if distance < nearestDistance then
-                    nearest, nearestDistance = candidate, distance
-                end
-            end
-        end
-    end
-    local current = BB.Z and BB.Z.targetPlayer
-    if current and current ~= LP and current.Character then
-        local currentChar = current.Character
-        local currentRoot = currentChar:FindFirstChild("HumanoidRootPart")
-        local currentHumanoid = currentChar:FindFirstChildOfClass("Humanoid")
-        if currentRoot and currentHumanoid and currentHumanoid.Health > 0 then
-            local currentDistance = (root.Position - currentRoot.Position).Magnitude
-            if currentDistance <= nearestDistance * 1.15 + 2 then
-                return current
-            end
-        end
-    end
-    return nearest
-end
-
-local function bbRotateRoot(root, direction, dt)
-    if direction.Magnitude < 0.01 then return end
-    local axis = root.CFrame.LookVector:Cross(direction.Unit)
-    local angle = math.asin(math.clamp(axis.Magnitude, -1, 1))
-    local angular = axis.Magnitude > 0.01 and axis.Unit * math.min(angle * 10, 8) or Vector3.zero
-    root.AssemblyAngularVelocity = root.AssemblyAngularVelocity:Lerp(angular, math.min(math.max((tonumber(dt) or (1/60)) * 15, 0), 1))
-end
-
-local function bbSamplePing()
-    local ok, value = pcall(function()
-        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    local Z = BB.Z
-    if ok and type(value) == "number" then Z.realPingMs = math.floor(value) end
-    Z.currentPing = math.clamp(
-        Z.realPingMs / 1000,
-        BB.ZCFG.MIN_PING_COMPENSATION,
-        BB.ZCFG.MAX_PING_COMPENSATION
-    )
-end
-
-BB.PingLoopStarted = BB.PingLoopStarted or false
-BB.PingLoopGeneration = BB.PingLoopGeneration or 0
-local function bbStartPingLoop()
-    if BB.PingLoopStarted then return end
-    BB.PingLoopGeneration = BB.PingLoopGeneration + 1
-    local generation = BB.PingLoopGeneration
-    BB.PingLoopStarted = true
-    task.spawn(function()
-        while BB.PingLoopStarted and BB.Enabled and generation == BB.PingLoopGeneration do
-            pcall(bbSamplePing)
-            task.wait(0.5)
-        end
-        if generation == BB.PingLoopGeneration then
-            BB.PingLoopStarted = false
-        end
-    end)
-end
-
--- Stubs para compatibilidad con la API antigua (Body Lock ya no se usa aparte)
-function BB.StartBodyLock() end
-function BB.StopBodyLock()  end
-
-function BB.Stop()
-    local Z = BB.Z
-    BB.Enabled = false
-    BB.PingLoopGeneration = (BB.PingLoopGeneration or 0) + 1
-    BB.PingLoopStarted = false
-    if BB.Connection then
-        BB.Connection:Disconnect()
-        BB.Connection = nil
-    end
-    local char     = LP.Character
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    local root     = char and char:FindFirstChild("HumanoidRootPart")
-    if humanoid then humanoid.AutoRotate = true end
-    if root     then root.AssemblyAngularVelocity = Vector3.zero end
-    bbResetTarget()
-    Z.lastActivationTime = 0
-    if BB.BodyLockSuppressed then
-        BB.BodyLockSuppressed = false
-        _unsuppressBodyLock(true)
-    end
-end
-
-function BB.Start()
-    if BB.Connection then return end
-
-    local char     = LP.Character
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    local root     = char and char:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not root then return end
-
-    BB.Enabled = true
-    bbStartPingLoop()
-    humanoid.AutoRotate = false
-    if not BB.BodyLockSuppressed then
-        BB.BodyLockSuppressed = true
-        _suppressBodyLock()
-    end
-
-    local bat = BB.FindBat()
-    if bat and bat.Parent ~= char then
-        pcall(function() humanoid:EquipTool(bat) end)
-    end
-
-    BB.Connection = RunService.RenderStepped:Connect(function(dt)
-        if not BB.Enabled then BB.Stop(); return end
-        local Z, ZCFG = BB.Z, BB.ZCFG
-
-        if _G.AceGetAntiBypassAimbotSpeed then
-            ZCFG.FOLLOW_SPEED = _G.AceGetAntiBypassAimbotSpeed()
-        end
-
-        local currentChar     = LP.Character
-        local currentRoot     = currentChar and currentChar:FindFirstChild("HumanoidRootPart")
-        local currentHumanoid = currentChar and currentChar:FindFirstChildOfClass("Humanoid")
-        if not currentRoot or not currentHumanoid or currentHumanoid.Health <= 0 then return end
-        root, humanoid = currentRoot, currentHumanoid
-        if humanoid.AutoRotate then humanoid.AutoRotate = false end
-
-        local nowT = tick()
-        local tool = currentChar:FindFirstChildOfClass("Tool")
-        local batTool = (tool and isBatTool(tool)) and tool or nil
-        if not batTool and nowT - (Z.lastEquip or 0) > 0.25 then
-            Z.lastEquip = nowT
-            local found = BB.FindBat()
-            if found then pcall(function() humanoid:EquipTool(found) end) end
-        end
-        bat = batTool
-
-        Z.targetPlayer = bbNearestTarget(root)
-        local targetChar = Z.targetPlayer and Z.targetPlayer.Character
-        local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-        local targetHumanoid = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
-        if not targetRoot or not targetHumanoid or targetHumanoid.Health <= 0 then
-            bbResetTarget(); return
-        end
-
-        local targetPos = targetRoot.Position
-        local myPos = root.Position
-        local safeDt = math.max(dt, 1 / 240)
-
-        -- Ziel-Geschwindigkeit: aus Positionsdifferenz, bei Spruengen/Teleports verwerfen
-        local posVel = Z.smoothedVelocity
-        if Z.lastTargetPos then
-            local raw = (targetPos - Z.lastTargetPos) / safeDt
-            if raw.Magnitude < 300 then posVel = raw end
-        end
-        Z.lastTargetPos = targetPos
-        Z.smoothedVelocity = Z.smoothedVelocity:Lerp(posVel, 1 - math.exp(-safeDt * 14))
-        local vel = Vector3.new(Z.smoothedVelocity.X, 0, Z.smoothedVelocity.Z)
-        if vel.Magnitude > ZCFG.MAX_HORIZONTAL_VELOCITY then vel = vel.Unit * ZCFG.MAX_HORIZONTAL_VELOCITY end
-        if vel.Magnitude < 1.5 then vel = Vector3.zero end
-
-        local followSpeed = math.clamp(tonumber(ZCFG.FOLLOW_SPEED) or 30, 1, 80)
-        local dx, dz = targetPos.X - myPos.X, targetPos.Z - myPos.Z
-        local flatDist = math.sqrt(dx * dx + dz * dz)
-
-        -- Abfangpunkt: Zeit bis zum Ziel + Ping-Anteil (vorher ~0.5s + 3 Studs Vorhalt -> ueberschossen)
-        local lead = math.clamp(flatDist / math.max(followSpeed, 10), 0, 0.35) + Z.currentPing * 0.6
-        local px = targetPos.X + vel.X * lead - myPos.X
-        local pz = targetPos.Z + vel.Z * lead - myPos.Z
-        local pm = math.sqrt(px * px + pz * pz)
-
-        local desired
-        if pm <= 3.5 then
-            desired = vel
-        else
-            local f = math.min(followSpeed, (pm - 3.5) * 12 + vel.Magnitude)
-            desired = Vector3.new(px / pm * f, 0, pz / pm * f)
-        end
-
-        local cv = root.AssemblyLinearVelocity
-        local alpha = 1 - math.exp(-safeDt * 20)
-        root.AssemblyLinearVelocity = Vector3.new(
-            cv.X + (desired.X - cv.X) * alpha,
-            cv.Y,
-            cv.Z + (desired.Z - cv.Z) * alpha
-        )
-        if targetPos.Y - myPos.Y > 6 and humanoid.FloorMaterial ~= Enum.Material.Air then
-            humanoid.Jump = true
-        end
-
-        -- Yaw direkt auf das Ziel (vorher asin()-Winkel: Ziel hinter dir -> kaum Drehung)
-        if flatDist <= 10 then
-            -- v1.7.4 Bypass = Aimbot (Anlauf) + TP-Snap (Nahbereich): auf deiner Seite 3.2 Studs vor dem
-            -- vorausberechneten Ziel platzieren, Blick aufs Ziel -> Server sieht Gegner direkt vor dir
-            local l2 = math.clamp(Z.currentPing + 0.08, 0, 0.3)
-            local ax, az = targetPos.X + vel.X * l2, targetPos.Z + vel.Z * l2
-            local bx, bz = myPos.X - ax, myPos.Z - az
-            local bm = math.sqrt(bx * bx + bz * bz)
-            if bm < 0.1 then bx, bz, bm = 0, 1, 1 end
-            root.CFrame = CFrame.lookAt(Vector3.new(ax + bx / bm * 3.2, myPos.Y, az + bz / bm * 3.2), Vector3.new(ax, myPos.Y, az))
-            root.AssemblyAngularVelocity = Vector3.zero
-        elseif flatDist > 0.5 then
-            local goalYaw = math.atan2(-dx, -dz)
-            local _, curYaw = root.CFrame:ToEulerAnglesYXZ()
-            local dYaw = (goalYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
-            local ra = math.clamp(1 - math.exp(-safeDt * 30), 0.35, 1)
-            root.CFrame = CFrame.new(myPos) * CFrame.Angles(0, curYaw + dYaw * ra, 0)
-            root.AssemblyAngularVelocity = Vector3.zero
-        end
-
-        local hitDist = math.max(ZCFG.ACTIVATE_DISTANCE or 4.5, 6)
-        if batTool and batTool.Parent == currentChar
-           and (targetPos - myPos).Magnitude <= hitDist
-           and nowT - Z.lastActivationTime >= 0.25 then
-            pcall(batTool.Activate, batTool)
-            Z.lastActivationTime = nowT
-        end
-    end)
-end
-
-function BB.Toggle()
-    if BB.Enabled then BB.Stop() else BB.Start() end
-end
-
--- ═══════════════════════════════════════════════════════════════
--- Compat wrappers (API externa usada por UI / config / visuales)
--- ═══════════════════════════════════════════════════════════════
-
-local function _aceSafeSave()
-    if type(saveAllSettings) == "function" then pcall(saveAllSettings) end
-end
-
-local function _aceCurrentSpeedMode()
-    if laggerCarryToggled then return "Lagger Carry" end
-    if laggerToggled      then return "Lagger" end
-    if speedMode          then return "Carry"  end
-    return "Normal"
-end
-
-_G.AceGetAntiBypassAimbotSpeed = function()
-    local mode = _aceCurrentSpeedMode()
-    if mode == "Lagger" or mode == "Lagger Carry" then
-        return tonumber(_G.AceAntiBypassLaggerAimbotSpeed) or 40
-    end
-    return tonumber(_G.AceAntiBypassAimbotSpeed) or 60
-end
-
-_G.AceRefreshAimbotVisual = function()
-    if _G.AceAimbotSetVisual then
-        _G.AceAimbotSetVisual(_G.AceAntiBypassAimbotOn == true)
-    end
-end
-
-_G.AceStartAntiBypassAimbot = function()
-    if _G.AceSafeModeTryStart and not _G.AceSafeModeTryStart() then
-        return false
-    end
-    if _G.AceStopAutoTPForAction then _G.AceStopAutoTPForAction() end
-    if _G.AceStopNormalAimbot    then _G.AceStopNormalAimbot()    end
-
-    selectedAimbotMode = "Bat Bypass"
-    _G.AceAntiBypassAimbotOn = true
-    SnowVS.BatBypass.ZCFG.FOLLOW_SPEED = _G.AceGetAntiBypassAimbotSpeed()
-    SnowVS.BatBypass.Start()
-
-    if _G.AceRefreshAimbotVisual then _G.AceRefreshAimbotVisual() end
-    _aceSafeSave()
-    return true
-end
-
-_G.AceStopAntiBypassAimbot = function(keepVisual)
-    SnowVS.BatBypass.Stop()
-    _G.AceAntiBypassAimbotOn = false
-    if keepVisual ~= false and _G.AceRefreshAimbotVisual then
-        _G.AceRefreshAimbotVisual()
-    end
-    _aceSafeSave()
-end
-
-_G.AceToggleSelectedAimbot = function()
-    if selectedAimbotMode == "Bat Bypass" then
-        if _G.AceAntiBypassAimbotOn then
-            _G.AceStopAntiBypassAimbot()
-        else
-            _G.AceStartAntiBypassAimbot()
-        end
-    end
-    if _G.AceRefreshAimbotVisual then _G.AceRefreshAimbotVisual() end
-    _aceSafeSave()
-end
-
-_G.AceAntiBypassStart = _G.AceStartAntiBypassAimbot
-_G.AceAntiBypassStop  = _G.AceStopAntiBypassAimbot
-
-function enableBatV2()
-    selectedAimbotMode = "Bat Bypass"
-    local ok = _G.AceStartAntiBypassAimbot()
-    if ok ~= false then
-        autoBatV2Enabled = true
-        if autoBatV2SetVisual then autoBatV2SetVisual(true) end
-        if batV2FloatingButton then
-            local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-            if btnFrame then paintFloatingBtn(btnFrame, true) end
-        end
-    end
-end
-
-function disableBatV2()
-    _G.AceStopAntiBypassAimbot()
-    autoBatV2Enabled = false
-    if autoBatV2SetVisual then autoBatV2SetVisual(false) end
-    if batV2FloatingButton then
-        local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-        if btnFrame then paintFloatingBtn(btnFrame, false) end
-    end
-end
-
-function toggleBatV2()
-    if autoBatV2Enabled then disableBatV2() else enableBatV2() end
-end
-
-_G.AceAntiBypassSaveToConfig = function(t)
-    t = t or {}
-    t.selectedAimbotMode              = selectedAimbotMode
-    t.ANTI_BYPASS_AIMBOT_SPEED        = _G.AceAntiBypassAimbotSpeed
-    t.ANTI_BYPASS_LAGGER_AIMBOT_SPEED = _G.AceAntiBypassLaggerAimbotSpeed
-    t.antiBypassAimbotEnabled         = _G.AceAntiBypassAimbotOn == true
-    return t
-end
-
-_G.AceAntiBypassLoadFromConfig = function(data)
-    if type(data) ~= "table" then return end
-    selectedAimbotMode = data.selectedAimbotMode or selectedAimbotMode
-    -- Migración de configs antiguas "Anti Bypass" → "Bat Bypass"
-    if selectedAimbotMode == "Anti Bypass" then
-        selectedAimbotMode = "Bat Bypass"
-    end
-    if selectedAimbotMode ~= "Bat Bypass" then
-        selectedAimbotMode = "Normal"
-    end
-    _G.AceAntiBypassAimbotSpeed =
-        tonumber(data.ANTI_BYPASS_AIMBOT_SPEED) or _G.AceAntiBypassAimbotSpeed or 60
-
-    if data.ANTI_BYPASS_LAGGER_AIMBOT_SPEED == nil
-       or tonumber(data.ANTI_BYPASS_LAGGER_AIMBOT_SPEED) == 58 then
-        _G.AceAntiBypassLaggerAimbotSpeed = 40
-    else
-        _G.AceAntiBypassLaggerAimbotSpeed =
-            tonumber(data.ANTI_BYPASS_LAGGER_AIMBOT_SPEED) or 40
-    end
-
-    _G.AceAntiBypassAimbotOn = data.antiBypassAimbotEnabled == true
-end
-
--- ═══════════════════════════════════════════════════════════════
 -- TP BAT — Network Owner Teleport + Anti-Die + Lagger
 -- TP Bat is available from the main combat toggle, keybind, and mobile quick-access button.
 -- ═══════════════════════════════════════════════════════════════
@@ -5302,7 +4819,7 @@ local function tpBatSetupChar(char)
         startAlvaroTP()
     end
 end
-_G.AlvaroTP._charConn = LP.CharacterAdded:Connect(function(char)
+_G.AlvaroTP._charConn = ShoxCharAdded(function(char)
     pcall(function() tpBatSetupChar(char) end)
 end)
 if LP.Character then
@@ -5609,6 +5126,8 @@ function runDropBrainrot()
         if _tick() - lastDropTime < cooldown then return end
         lastDropTime = _tick()
         dropActive = true
+        ShoxDropToken = (ShoxDropToken or 0) + 1
+        local dropToken = ShoxDropToken
         if dropBrainrotSetVisual then dropBrainrotSetVisual(true) end
         if mobSetDropBR then mobSetDropBR(true) end
         local wasAutoBat = false
@@ -5660,7 +5179,7 @@ function runDropBrainrot()
         local flingThread = nil
         flingThread = task.spawn(function()
             local startTime = _tick()
-            while dropActive and (_tick() - startTime) < 0.25 do
+            while dropActive and ShoxDropToken == dropToken and (_tick() - startTime) < 0.25 do
                 RunService.Heartbeat:Wait()
                 local c = LP.Character
                 local r = c and c:FindFirstChild("HumanoidRootPart")
@@ -5678,11 +5197,11 @@ function runDropBrainrot()
                 RunService.Stepped:Wait()
                 if r and r.Parent then r.AssemblyLinearVelocity = vel + _V3new(0, 0.1, 0) end
             end
-            finishDrop(flingThread)
+            if ShoxDropToken == dropToken then finishDrop(flingThread) end
         end)
         table.insert(dropConnections, flingThread)
         task.delay(0.35, function()
-            if dropActive then finishDrop(flingThread) end
+            if dropActive and ShoxDropToken == dropToken then finishDrop(flingThread) end
         end)
         return
     end
@@ -5752,7 +5271,7 @@ function executeDropWithToggle(setVisual)
 end
 
 -- v1.7.2: "Auto [select] after drop": schaltet nach dem Drop die gewaehlte Funktion ein
-AUTO_AFTER_DROP_OPTIONS = {"Off", "Auto Bat", "TP Bat", "Bat Bypass", "Auto Left", "Auto Right", "Body Lock"}
+AUTO_AFTER_DROP_OPTIONS = {"Off", "Auto Bat", "TP Bat", "Auto Left", "Auto Right"}
 autoAfterDrop = autoAfterDrop or "Off"
 autoAfterDropLabel = nil
 
@@ -5774,11 +5293,6 @@ function ShoxAfterDrop()
                 if batDesyncTpSetVisual then batDesyncTpSetVisual(batDesyncTpEnabled) end
                 if mobSetTpBat then mobSetTpBat(batDesyncTpEnabled) end
             end
-        elseif sel == "Bat Bypass" then
-            if not autoBatV2Enabled then
-                enableBatV2()
-                if autoBatV2SetVisual then autoBatV2SetVisual(true) end
-            end
         elseif sel == "Auto Left" then
             if not autoLeftEnabled then
                 autoLeftEnabled = true
@@ -5792,12 +5306,6 @@ function ShoxAfterDrop()
                 startAutoRight()
                 if autoRightSetVisual then autoRightSetVisual(true) end
                 if mobSetAutoRight then mobSetAutoRight(true) end
-            end
-        elseif sel == "Body Lock" then
-            if not bodyLockEnabled then
-                bodyLockEnabled = true
-                if _blSuppressCount == 0 then startBodyLock() else _blWasEnabled = true end
-                if bodyLockSetVisual then bodyLockSetVisual(true) end
             end
         end
     end)
@@ -5894,8 +5402,10 @@ function enableAntiLag()
     removeAccessoriesEnabled = true -- Kompatibilitaet mit vorhandenen Toggle-Stellen; loescht nichts.
 
     pcall(function()
-        settings().Rendering.QualityLevel = 1
-        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
+        local rs = settings().Rendering
+        if ShoxAL.origQL == nil then ShoxAL.origQL = rs.QualityLevel; ShoxAL.origMesh = rs.MeshPartDetailLevel end
+        rs.QualityLevel = 1
+        rs.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Disabled
     end)
 
     if antiLagDescConn then antiLagDescConn:Disconnect() end
@@ -5936,6 +5446,15 @@ function disableAntiLag()
     antiLagEnabled = false
     ShoxAL.scanGen = ShoxAL.scanGen + 1
     removeAccessoriesEnabled = false
+    -- v1.8.0: Qualitaet/Mesh-Detail wiederherstellen (vorher blieb alles auf Stufe 1)
+    if ShoxAL.origQL ~= nil then
+        pcall(function()
+            local rs = settings().Rendering
+            rs.QualityLevel = ShoxAL.origQL
+            if ShoxAL.origMesh ~= nil then rs.MeshPartDetailLevel = ShoxAL.origMesh end
+        end)
+        ShoxAL.origQL, ShoxAL.origMesh = nil, nil
+    end
 
     if antiLagDescConn then antiLagDescConn:Disconnect(); antiLagDescConn = nil end
     if ShoxAL.lightConn then ShoxAL.lightConn:Disconnect(); ShoxAL.lightConn = nil end
@@ -6463,7 +5982,7 @@ function setupMovementAndIndicators(char)
         if not hum or not hrp then return end
 
         if not autoBatEnabled and not autoLeftEnabled and not autoRightEnabled
-           and not autoBatV2Enabled and not batDesyncTpEnabled
+           and not dropActive and not batDesyncTpEnabled
            and not useCarrySystem then
             if _isRagdollState(hum) then
                 lastMoveDir = _V3zero
@@ -6521,14 +6040,6 @@ function disableAllAimbots()
         if mobSetAutoBat then mobSetAutoBat(false) end
     end
     if batDesyncTpEnabled then stopBatDesyncTp() end
-    if autoBatV2Enabled then
-        disableBatV2()
-        if autoBatV2SetVisual then autoBatV2SetVisual(false) end
-        if batV2FloatingButton then
-            local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-            if btnFrame then paintFloatingBtn(btnFrame, false) end
-        end
-    end
 end
 
 
@@ -6548,7 +6059,6 @@ function stopAllBackgroundTasks()
     stopAutoSteal()
     disableAutoBat()
     if batDesyncTpEnabled then stopBatDesyncTp() end
-    if autoBatV2Enabled then disableBatV2() end
     stopAutoLeft()
     stopAutoRight()
     if unwalkEnabled and not _tpBatUnwalkForced then stopUnwalk() end
@@ -6912,11 +6422,6 @@ function buildConfigTable()
         tpBatEnabled = batDesyncTpEnabled,
         neonWeather = neonWeatherEnabled,
         skyTheme = skyTheme,
-        autoBatV2Enabled = autoBatV2Enabled,
-        selectedAimbotMode              = selectedAimbotMode,
-        ANTI_BYPASS_AIMBOT_SPEED        = _G.AceAntiBypassAimbotSpeed,
-        ANTI_BYPASS_LAGGER_AIMBOT_SPEED = _G.AceAntiBypassLaggerAimbotSpeed,
-        antiBypassAimbotEnabled         = _G.AceAntiBypassAimbotOn == true,
         katanaSkinEnabled = katanaSkinEnabled,
         minecraftBatSkinEnabled = minecraftBatSkinEnabled,
         minecraftBatSkinColorMode = minecraftBatSkinColorMode,
@@ -6944,9 +6449,7 @@ function buildConfigTable()
         carryToggleKey = {kb = KB.CarryToggle.kb and KB.CarryToggle.kb.Name, gp = KB.CarryToggle.gp and KB.CarryToggle.gp.Name},
         laggerModeKey = {kb = KB.LaggerMode.kb and KB.LaggerMode.kb.Name, gp = KB.LaggerMode.gp and KB.LaggerMode.gp.Name},
         tpBatKey = {kb = KB.TPBat.kb and KB.TPBat.kb.Name, gp = KB.TPBat.gp and KB.TPBat.gp.Name},
-        batV2Key = {kb = KB.BatV2.kb and KB.BatV2.kb.Name, gp = KB.BatV2.gp and KB.BatV2.gp.Name},
         instaResetKey = {kb = KB.InstaReset.kb and KB.InstaReset.kb.Name, gp = KB.InstaReset.gp and KB.InstaReset.gp.Name},
-        batV2FloatingPos = batV2FloatingPos,
         instaResetFloatingPos = instaResetFloatingPos,
         bodyLockEnabled = bodyLockEnabled,
         bodyLockRange = bodyLockRange,
@@ -7150,17 +6653,6 @@ function loadAllSettings()
     selectedColor = COLOR_THEMES[currentColorTheme]
     updateAllUIThemeColors(selectedColor)
 
-    _G.AceAntiBypassLoadFromConfig(data)
-    autoBatV2Enabled = _G.AceAntiBypassAimbotOn == true
-    if autoBatV2Enabled then
-        task.defer(function()
-            enableBatV2()
-            if autoBatV2SetVisual then autoBatV2SetVisual(true) end
-        end)
-    else
-        if autoBatV2SetVisual then autoBatV2SetVisual(false) end
-    end
-
     katanaSkinEnabled = false
     minecraftBatSkinEnabled = data.minecraftBatSkinEnabled or false
     minecraftBatSkinColorMode = data.minecraftBatSkinColorMode or "Default"
@@ -7175,13 +6667,12 @@ function loadAllSettings()
         task.defer(function() pcall(MinecraftBatSkin.Remove) end)
     end
     ShoxHubAutoTPDown = data.shoxHubAutoTPDown == true
-    ShoxHubAutoTPDownHeight = math.clamp(tonumber(data.shoxHubAutoTPDownHeight) or ShoxHubAutoTPDownHeight, 0, 500)
+    ShoxHubAutoTPDownHeight = math.clamp(tonumber(data.shoxHubAutoTPDownHeight) or ShoxHubAutoTPDownHeight, 1, 500)
     if ShoxHubAutoTPDownHeightBox then ShoxHubAutoTPDownHeightBox.Text = tostring(ShoxHubAutoTPDownHeight) end
     ShoxHubShowE01Warning = data.shoxHubShowE01Warning == true
     if ShoxHubAutoTPDownSetVisual then ShoxHubAutoTPDownSetVisual(ShoxHubAutoTPDown) end
     if ShoxHubShowE01WarningSetVisual then ShoxHubShowE01WarningSetVisual(ShoxHubShowE01Warning) end
     tpBatVersion = 1
-    _G.__tpBatV2Distance = 8
 
     infJumpEnabled      = data.holdJumpEnabled == true
     infJumpMode         = (data.holdJumpMode == "MANUAL") and "MANUAL" or "HOLD"
@@ -7254,7 +6745,6 @@ function loadAllSettings()
     lk(KB.CarryToggle, data.carryToggleKey)
     lk(KB.LaggerMode, data.laggerModeKey)
     lk(KB.TPBat, data.tpBatKey)
-    lk(KB.BatV2, data.batV2Key)
     lk(KB.InstaReset, data.instaResetKey)
     if type(data.mobileButtonPositions) == "table" then savedButtonPositions = data.mobileButtonPositions end
     do -- v1.7.2: neues Raster (Insta Reset neben Drop): alte Standardpositionen mitziehen
@@ -7283,7 +6773,6 @@ function loadAllSettings()
         end
     end
     if type(data.mobilePanelPos) == "table" then savedMobilePanelPos = data.mobilePanelPos end
-    if type(data.batV2FloatingPos) == "table" then batV2FloatingPos = data.batV2FloatingPos end
     if type(data.instaResetFloatingPos) == "table" then instaResetFloatingPos = data.instaResetFloatingPos end
     if type(data.progressBarPos) == "table" then savedProgressBarPos = data.progressBarPos end
     if data.bodyLockEnabled ~= nil then
@@ -7446,7 +6935,6 @@ function forceResetUI()
     safeSet(setESPVIsual, false)
     safeSet(bodyLockSetVisual, false)
     safeSet(setNeonWeatherVisual, false)
-    safeSet(autoBatV2SetVisual, false)
     safeSet(setAntiDieVisual, false)
     safeSet(MinecraftBatSetVisual, false)
     safeSet(setSafeModeVisual, false)
@@ -7475,7 +6963,6 @@ function forceResetUI()
     autoAfterDrop = "Off"
     if autoAfterDropLabel then autoAfterDropLabel.Text = "Off" end
     tpBatVersion = 1
-    _G.__tpBatV2Distance = 8
     minecraftBatSkinEnabled = false
     minecraftBatSkinColorMode = "Default"
     MinecraftBatSkin.State.enabled = false
@@ -7489,7 +6976,6 @@ function forceResetUI()
     skyTheme = "Off"
     pcall(applyCustomSky, "Off")
     if skySelectorLabel then skySelectorLabel.Text = "Off" end
-    disableBatV2()
     if antiDieEnabled then
         AntiDieModule.stop()
         antiDieEnabled = false
@@ -7568,11 +7054,6 @@ function resetFloatingPositions()
             end
         end
     end
-    if batV2FloatingButton and batV2FloatingButton:FindFirstChild("Frame") then
-        local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-        btnFrame.Position = UDim2.new(0.5, -50, 0, 10)
-        batV2FloatingPos = nil
-    end
     if instaResetFloatingButton and instaResetFloatingButton:FindFirstChild("Frame") then
         instaResetFloatingButton.Frame.Position = UDim2.new(0.5, 90, 0, 10)
         instaResetFloatingPos = nil
@@ -7582,7 +7063,6 @@ function resetFloatingPositions()
         savedProgressBarPos = nil
     end
     savedMobilePanelPos = nil
-        batV2FloatingPos = nil
 end
 
 function resetToFactoryDefaults()
@@ -7601,7 +7081,6 @@ function resetToFactoryDefaults()
         stopUnwalk()
         disableAutoBat()
         if batDesyncTpEnabled then stopBatDesyncTp() end
-        disableBatV2()
         stopBodyLock()
         if espEnabled then toggleESP(false) end
         if stretchEnabled then disableStretch() end
@@ -7667,7 +7146,6 @@ function resetToFactoryDefaults()
         espEnabled = false
         bodyLockEnabled = false
         bodyLockRange = 20
-        autoBatV2Enabled = false
         katanaSkinEnabled = false
         minecraftBatSkinEnabled = false
         minecraftBatSkinColorMode = "Default"
@@ -7677,7 +7155,6 @@ function resetToFactoryDefaults()
         floatingButtonScale = 1
         if batDesyncTpEnabled then stopBatDesyncTp() end
         tpBatVersion = 1
-        _G.__tpBatV2Distance = 8
         currentAnimPack = "Off"
         stopAnimPack()
         currentOutfitIndex = 1
@@ -7783,12 +7260,10 @@ function _G.AmbitiousApplyMobileButtonsHidden()
     local panels = {
         "FictionHubMobilePanel",
         "TpBatButton",
-        "BatV2Button",
         "InstaResetButton",
     }
     local keyByPanel = {
         TpBatButton      = "tpBat",
-        BatV2Button      = "batV2",
         InstaResetButton = "instaReset",
     }
     for _, name in ipairs(panels) do
@@ -7833,7 +7308,6 @@ local HIDE_BUTTONS_ITEMS = {
     { key = "drop",         label = "Drop BR" },
     { key = "tpBat",        label = "TP Bat" },
     { key = "aimbot",       label = "Bat Aimbot" },
-    { key = "batV2",        label = "Bat Bypass" },
     { key = "instaReset",   label = "Insta Reset" },
     { key = "tp",           label = "TP Down" },
     { key = "autoLeft",     label = "Auto Left" },
@@ -7959,7 +7433,7 @@ do
 
         print("[IR] 3. función lista")
 
-        LP.CharacterAdded:Connect(function()
+        ShoxCharAdded(function()
             stopResetSequence = true
             if resetThread then pcall(task.cancel, resetThread); resetThread = nil end
             resetCooldown    = false
@@ -8957,7 +8431,7 @@ function buildGui()
         clk.Text = ""
         clk.AutoButtonColor = false
         clk.ZIndex = 8
-        clk.MouseButton1Click:Connect(function() doTpDown() end)
+        clk.MouseButton1Click:Connect(function() doTpDown(true) end)
         local actLbl = Instance.new("TextLabel", row)
         actLbl.Size = UDim2.new(0, 70, 1, 0)
         actLbl.Position = UDim2.new(1, -78, 0, 0)
@@ -8975,9 +8449,10 @@ function buildGui()
     end)
     do
         local row = mkRow(speedPage, 38)
-        mkLabel(row, "TP Down Height")
+        mkLabel(row, "TP Down Y (Welt-Y)")
         ShoxHubAutoTPDownHeightBox = mkBox(row, ShoxHubAutoTPDownHeight, 50, 56, function(value)
-            ShoxHubAutoTPDownHeight = math.clamp(value, 0, 500)
+            ShoxHubAutoTPDownHeight = math.clamp(_floor((tonumber(value) or 20) + 0.5), 1, 500)
+            if ShoxHubAutoTPDownHeightBox then ShoxHubAutoTPDownHeightBox.Text = tostring(ShoxHubAutoTPDownHeight) end
             saveAllSettings()
         end)
     end
@@ -9020,12 +8495,6 @@ function buildGui()
         end
     end)
     if batDesyncTpSetVisual then batDesyncTpSetVisual(batDesyncTpEnabled) end
-
-    autoBatV2SetVisual = mkToggle(combatPage, "Bat Bypass", function(on)
-        if on then enableBatV2() else disableBatV2() end
-    end)
-    if autoBatV2SetVisual then autoBatV2SetVisual(autoBatV2Enabled) end
-    _G.AceAimbotSetVisual = autoBatV2SetVisual
 
     -- Auto Steal belongs with combat/gameplay actions, not general Settings.
     mkSect(combatPage, "Auto Steal")
@@ -9791,7 +9260,6 @@ function buildGui()
     addKeybindRow(keyPage, "Auto Right", KB.AutoRight)
     addKeybindRow(keyPage, "Auto Bat", KB.AutoBat)
     addKeybindRow(keyPage, "TP BAT", KB.TPBat)
-    addKeybindRow(keyPage, "Bat Bypass", KB.BatV2)
     addKeybindRow(keyPage, "Insta Reset", KB.InstaReset)
     addKeybindRow(keyPage, "TP Down", KB.TPFloor)
     addKeybindRow(keyPage, "Drop Brainrot", KB.DropBrainrot)
@@ -10169,7 +9637,7 @@ function createMobilePanel()
             end
         elseif name == "TpDown" then
             callback = function(setActive)
-                doTpDown()
+                doTpDown(true)
                 setActive(true)
                 task.delay(0.2, function() setActive(false) end)
             end
@@ -10283,106 +9751,6 @@ function createMobilePanel()
     -- The panel itself stays anchored; individual buttons are movable when Lock Buttons is off.
 
     _G.AmbitiousApplyMobileButtonsHidden()
-    return panel
-end
-
-function createBatV2FloatingButton()
-    local panel = Instance.new("ScreenGui")
-    panel.Name = "BatV2Button"
-    panel.ResetOnSpawn = false
-    panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    panel.DisplayOrder = 2000003
-    pcall(function() if syn and syn.protect_gui then syn.protect_gui(panel) end end)
-    local okPanel = pcall(function() panel.Parent = game:GetService("CoreGui") end)
-    if not okPanel then panel.Parent = LP:WaitForChild("PlayerGui") end
-
-    local btnFrame = Instance.new("Frame", panel)
-    btnFrame.Size = UDim2.new(0, 60, 0, 60)
-    btnFrame.Name = "Frame"
-    if batV2FloatingPos then
-        btnFrame.Position = UDim2.new(batV2FloatingPos.XScale or 0.5,
-                                      batV2FloatingPos.XOffset or -50,
-                                      batV2FloatingPos.YScale or 0,
-                                      batV2FloatingPos.YOffset or 10)
-    else
-        btnFrame.Position = UDim2.new(0.5, -50, 0, 10)
-    end
-    btnFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
-    btnFrame.BackgroundTransparency = 0
-    btnFrame.BorderSizePixel = 0
-    btnFrame.ZIndex = 20
-    Instance.new("UICorner", btnFrame).CornerRadius = UDim.new(0, 10)
-
-    local bgGrad = Instance.new("UIGradient", btnFrame)
-    bgGrad.Name = "BtnGrad"
-    bgGrad.Rotation = 90
-    bgGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
-        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
-        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
-        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
-    })
-
-    local stroke = Instance.new("UIStroke", btnFrame)
-    stroke.Color = Color3.fromRGB(71, 71, 71)
-    stroke.Thickness = 1
-    stroke.Transparency = 0.45
-    local label = Instance.new("TextLabel", btnFrame)
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.BackgroundTransparency = 1
-    label.Text = "BAT\nBYPASS"
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = SHOX_UI_FONT
-    label.TextSize = 10
-    label.TextWrapped = true
-    label.ZIndex = 21
-
-    local uiScale = Instance.new("UIScale", btnFrame)
-    uiScale.Scale = floatingButtonScale
-    table.insert(_floatingUIScales, uiScale)
-
-    local function setActive(state)
-        paintFloatingBtn(btnFrame, state)
-    end
-
-    local dragging = false; local hasMoved = false; local dragStart, startPos
-    btnFrame.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; hasMoved = false; dragStart = inp.Position; startPos = btnFrame.Position
-        end
-    end)
-    btnFrame.InputChanged:Connect(function(inp)
-        if not dragging then return end
-        if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then
-            local delta = inp.Position - dragStart
-            if delta.Magnitude > 5 then hasMoved = true end
-            if hasMoved and not (uiLocked or mobileButtonsLocked) then
-                btnFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
-                                              startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-            end
-        end
-    end)
-    btnFrame.InputEnded:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            if dragging then
-                if not hasMoved then
-                    setActive(not autoBatV2Enabled)
-                    toggleBatV2()
-                elseif not (uiLocked or mobileButtonsLocked) and hasMoved then
-                    batV2FloatingPos = {
-                        XScale = btnFrame.Position.X.Scale,
-                        XOffset = btnFrame.Position.X.Offset,
-                        YScale = btnFrame.Position.Y.Scale,
-                        YOffset = btnFrame.Position.Y.Offset
-                    }
-                    pcall(saveAllSettings)
-                end
-                dragging = false; hasMoved = false
-            end
-        end
-    end)
-
-    batV2FloatingButton = panel
     return panel
 end
 
@@ -10634,20 +10002,6 @@ function updateUIFromLoaded()
         updateTpBatButtonVisual(false)
     end
 
-    if autoBatV2Enabled then
-        if autoBatV2SetVisual then autoBatV2SetVisual(true) end
-        if batV2FloatingButton then
-            local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-            if btnFrame then paintFloatingBtn(btnFrame, true) end
-        end
-    else
-        if autoBatV2SetVisual then autoBatV2SetVisual(false) end
-        if batV2FloatingButton then
-            local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-            if btnFrame then paintFloatingBtn(btnFrame, false) end
-        end
-    end
-
     if neonWeatherEnabled then
         applyNeonWeather()
         if setNeonWeatherVisual then setNeonWeatherVisual(true) end
@@ -10757,18 +10111,6 @@ function updateUIFromLoaded()
     end
 
 
-    if batV2FloatingButton and batV2FloatingPos then
-        local bf = batV2FloatingButton:FindFirstChild("Frame")
-        if bf then
-            bf.Position = UDim2.new(
-                batV2FloatingPos.XScale or 0.5,
-                batV2FloatingPos.XOffset or -50,
-                batV2FloatingPos.YScale or 0,
-                batV2FloatingPos.YOffset or 10
-            )
-        end
-    end
-
     if instaResetFloatingButton and instaResetFloatingPos then
         local bf = instaResetFloatingButton:FindFirstChild("Frame")
         if bf then
@@ -10789,53 +10131,33 @@ ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
 
 ShoxHubAutoTPCheckAt = 0
-ShoxAutoTPPrevY, ShoxAutoTPPrevT, ShoxAutoTPPrevChar = nil, 0, nil
--- v1.7.5: Fall wird jetzt auch ueber die echte Y-Aenderung erkannt (Velocity.Y kann von anderen Systemen
--- ueberschrieben/genullt sein), FloorMaterial-Pflicht entfernt, Debug: _G.ShoxATPDebug = true (Konsole)
+ShoxATPDbgAt = 0
+-- v1.8.0: Auto TP Down nach S2: nur FloorMaterial == Air UND root.Y >= Welt-Y-Grenze, Check alle 0.1s, 0.35s Sperre
 RunService.Heartbeat:Connect(function()
-    if not ShoxHubAutoTPDown then ShoxAutoTPPrevY = nil return end
+    local now = os.clock()
+    if _G.ShoxATPDebug and now - ShoxATPDbgAt >= 1 then
+        ShoxATPDbgAt = now
+        local dc = LP.Character
+        local dr = dc and dc:FindFirstChild("HumanoidRootPart")
+        local dh = dc and dc:FindFirstChildOfClass("Humanoid")
+        if dr and dh then
+            warn(string.format("[ShoxATP] Y=%.2f Floor=%s Ziel-Y=%.2f Grenze=%s", dr.Position.Y, dh.FloorMaterial.Name, ShoxTPDownGroundY, tostring(ShoxHubAutoTPDownHeight)))
+        end
+    end
+    if not ShoxHubAutoTPDown then return end
+    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then return end
+    if autoBatEnabled == true or batDesyncTpEnabled == true then return end
+    if now - ShoxHubAutoTPCheckAt < 0.1 or now - ShoxHubAutoTPLastAt < 0.35 then return end
+    ShoxHubAutoTPCheckAt = now
     local ch = LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health <= 0 then ShoxAutoTPPrevY = nil return end
-    local now = os.clock()
-    local y = root.Position.Y
-    local fallSpeed = 0
-    if ShoxAutoTPPrevChar == ch and ShoxAutoTPPrevY and now > ShoxAutoTPPrevT then
-        fallSpeed = (ShoxAutoTPPrevY - y) / (now - ShoxAutoTPPrevT)
-    end
-    ShoxAutoTPPrevChar, ShoxAutoTPPrevY, ShoxAutoTPPrevT = ch, y, now
-    local falling = root.AssemblyLinearVelocity.Y <= -6 or (fallSpeed >= 6 and fallSpeed < 400)
-    if not falling then return end
-    local why
-    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then
-        why = "blockiert: Auto Left/Right/Drop"
-    elseif autoBatEnabled == true or autoBatV2Enabled == true or batDesyncTpEnabled == true then
-        why = "blockiert: Bat-Modus"
-    elseif now - ShoxHubAutoTPCheckAt < 0.05 or now - ShoxHubAutoTPLastAt < 0.35 then
-        return
-    elseif hum:GetState() == Enum.HumanoidStateType.Seated then
-        why = "sitzt"
-    end
-    if why then
-        if _G.ShoxATPDebug then shoxWarn("ATPD", why, 2) end
-        return
-    end
-    ShoxHubAutoTPCheckAt = now
-    local hit = ShoxGetGroundHit(ch, root)
-    if not hit then
-        if _G.ShoxATPDebug then shoxWarn("ATPD", "kein Boden gefunden", 2) end
-        return
-    end
-    local height = root.Position.Y - hit.Position.Y
-    local need = math.max(tonumber(ShoxHubAutoTPDownHeight) or 20, 6)
-    if _G.ShoxATPDebug then
-        shoxWarn("ATPD", string.format("fall vy=%.1f dy/dt=%.1f hoehe=%.1f noetig=%.1f boden=%s", root.AssemblyLinearVelocity.Y, fallSpeed, height, need, hit.Instance:GetFullName()), 0.5)
-    end
-    if height >= need then
-        ShoxHubAutoTPLastAt = now
-        doTpDown()
-    end
+    if not root or not hum or hum.Health <= 0 then return end
+    if hum.FloorMaterial ~= Enum.Material.Air then return end
+    if hum:GetState() == Enum.HumanoidStateType.Seated then return end
+    if root.Position.Y < math.clamp(tonumber(ShoxHubAutoTPDownHeight) or 20, 1, 500) then return end
+    ShoxHubAutoTPLastAt = now
+    doTpDown(false)
 end)
 
 local function ShoxHubIsCarrying()
@@ -10944,7 +10266,7 @@ RunService.Heartbeat:Connect(function()
     fill.Size = UDim2.new(ShoxHubProgress, 0, 1, 0)
 end)
 
-LP.CharacterAdded:Connect(function()
+ShoxCharAdded(function()
     if ShoxHubE01Gui then
         pcall(function() ShoxHubE01Gui:Destroy() end)
     end
@@ -10972,7 +10294,6 @@ for _, legacyName in ipairs({"TpBatButton", "BatV2Button", "InstaResetButton"}) 
         if oldGui then oldGui:Destroy() end
     end
 end
-batV2FloatingButton = nil
 instaResetFloatingButton = nil
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -11323,7 +10644,7 @@ if LP.Character then
 end
 
 local _respawnQueue = 0
-LP.CharacterAdded:Connect(function(char)
+ShoxCharAdded(function(char)
     local ok, err = xpcall(function()
         _respawnQueue = _respawnQueue + 1
         local myId = _respawnQueue
@@ -11338,7 +10659,6 @@ LP.CharacterAdded:Connect(function(char)
         stopDropBrainrot()
         if autoBatEnabled then disableAutoBat() end
         if batDesyncTpEnabled then stopBatDesyncTp() end
-        if autoBatV2Enabled then disableBatV2() end
         if bodyLockEnabled then stopBodyLock() end
 
         local deadline = _tick() + 5
@@ -11358,7 +10678,6 @@ LP.CharacterAdded:Connect(function(char)
         if AntiDieModule.enabled then task.defer(function() activateOnCharacter(char) end) end
         if CONFIG.AUTO_STEAL_ENABLED then pcall(startAutoSteal) end
         if batDesyncTpEnabled then task.defer(startBatDesyncTp) end
-        if autoBatV2Enabled then task.defer(enableBatV2) end
         if bodyLockEnabled and _blSuppressCount == 0 then startBodyLock() end
 
         if medusaCounterEnabled then
@@ -11407,6 +10726,7 @@ UIS.InputEnded:Connect(function(input)
 end)
 
 UIS.InputBegan:Connect(function(input, gpe)
+    if not ShoxHubState.Running then return end
     if _anyKeyListening then return end
     if input.UserInputType == Enum.UserInputType.Keyboard then
         if gpe or UIS:GetFocusedTextBox() then return end
@@ -11433,7 +10753,7 @@ UIS.InputBegan:Connect(function(input, gpe)
         end
         return
     end
-    if kbMatch(KB.TPFloor, kc) then doTpDown(); return end
+    if kbMatch(KB.TPFloor, kc) then doTpDown(true); return end
     if kbMatch(KB.InstaReset, kc) then
         if _G.InstaReset and _G.InstaReset.Trigger then
             _G.InstaReset.Trigger()
@@ -11469,15 +10789,6 @@ UIS.InputBegan:Connect(function(input, gpe)
     if kbMatch(KB.TPBat, kc) then
         toggleBatDesyncTp()
         if batDesyncTpSetVisual then batDesyncTpSetVisual(batDesyncTpEnabled) end
-        return
-    end
-    if kbMatch(KB.BatV2, kc) then
-        toggleBatV2()
-        if autoBatV2SetVisual then autoBatV2SetVisual(autoBatV2Enabled) end
-        if batV2FloatingButton then
-            local btnFrame = batV2FloatingButton:FindFirstChild("Frame")
-            if btnFrame then paintFloatingBtn(btnFrame, autoBatV2Enabled) end
-        end
         return
     end
     if kbMatch(KB.GuiHide, kc) then
