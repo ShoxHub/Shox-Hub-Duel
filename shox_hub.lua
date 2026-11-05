@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.1"
+ShoxHubState.Version     = "v1.9.2"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -62,7 +62,7 @@ local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
 -- v1.6.0: Unified font matches CTD intro brand (GothamBlack).
-local SHOX_UI_FONT = Enum.Font.GothamMedium  -- v1.9.1: Fenster/Balken duenner; Mobile-Buttons behalten GothamBlack
+local SHOX_UI_FONT = Enum.Font.GothamBlack  -- v1.9.2: zurueck auf GothamBlack (wie Mobile-Buttons)
 
 local ShoxIntro = {
     Running = true,
@@ -700,6 +700,8 @@ function CarrySystem:updateMovement(dt)
     end
 
     local speed = self:getActiveSpeed()
+    local scap = ShoxStealCapGet and ShoxStealCapGet()
+    if scap and scap < speed then speed = scap end
     local moveDir = hum.MoveDirection
     local moving = moveDir.Magnitude > 0.1
 
@@ -2384,6 +2386,8 @@ local function executeSteal(prompt, podName)
                     if fp >= 1 and not promptFired then
                         promptFired = true
                         if ShoxMarkStealStart then ShoxMarkStealStart() end
+                        if ShoxCarryLatch then ShoxCarryLatch(14) end
+                        if ShoxCarryDebugRun then ShoxCarryDebugRun() end
                         pcall(function()
                             for _, f in ipairs(data.trigger) do task.spawn(f) end
                             if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
@@ -2405,9 +2409,14 @@ local function executeSteal(prompt, podName)
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
                 -- Full Auto (4): +4 Studs Toleranz, weil der Avatar beim Hold noch laeuft
                 if hrp and (hrp.Position - targetPart.Position).Magnitude > Steal.StealRadius + (autoStealVariant == 4 and 4 or 0) then break end
+                if autoStealVariant == 4 and hrp and targetPart then
+                    pcall(ShoxStealCapUpdate, hrp, targetPart, Steal.StealRadius + 4, duration - elapsed)
+                end
                 if elapsed >= duration and not promptFired then
                     promptFired = true
                     if ShoxMarkStealStart then ShoxMarkStealStart() end
+                    if ShoxCarryLatch then ShoxCarryLatch(14) end
+                    if ShoxCarryDebugRun then ShoxCarryDebugRun() end
                     pcall(function()
                         for _, f in ipairs(data.trigger) do task.spawn(f) end
                         if prompt then ShoxFirePrompt(prompt, #data.trigger > 0) end
@@ -2420,6 +2429,7 @@ local function executeSteal(prompt, podName)
         if progressFill then progressFill.Size = UDim2.new(0, 0, 1, 0) end
         if progressPct then progressPct.Text = "0%" end
         end, function(err) return tostring(err) end)
+        ShoxStealCap = nil
         if not recursionStarted then
             data.ready = true
             isStealing = false
@@ -2466,6 +2476,7 @@ function stopAutoSteal()
         stealConnection = nil
     end
     isStealing = false
+    ShoxStealCap = nil
     Steal.AutoStealEnabled = false
     CONFIG.AUTO_STEAL_ENABLED = false
     if progressFill then
@@ -2638,6 +2649,38 @@ end
 -- v1.8.0: TP Down nach S2-Vorbild: festes Ziel-Y, KEIN Raycast, keine Fall-Velocity-Bedingung.
 -- ShoxTPDownGroundY = Y der HumanoidRootPart am Boden (S2 nutzt -7.00). Im Spiel pruefen: _G.ShoxATPDebug = true
 ShoxTPDownGroundY = -7.00
+
+-- v1.9.2: Auto TP Down ohne CFrame-Teleport: nur Y-Tempo hoch setzen, X/Z bleibt unangetastet.
+ShoxFFConn = nil
+ShoxFFUntil = 0
+ShoxFFSpeed = 150
+function ShoxFastFall()
+    ShoxFFUntil = os.clock() + 2
+    if ShoxFFConn then return end
+    ShoxFFConn = RunService.Heartbeat:Connect(function()
+        local ch = LP.Character
+        local root = ch and ch:FindFirstChild("HumanoidRootPart")
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        local stop = (not root) or (not hum) or hum.Health <= 0 or os.clock() > ShoxFFUntil
+            or hum.FloorMaterial ~= Enum.Material.Air
+        local vy = -ShoxFFSpeed
+        if not stop then
+            local okG, hit = pcall(ShoxGetGroundHit, ch, root)
+            if okG and hit and hit.Position then
+                local dist = root.Position.Y - (hit.Position.Y + ShoxGetStandOffset(hum, root))
+                if dist <= 0.4 then stop = true end
+                vy = -math.min(ShoxFFSpeed, math.max(dist * 30, 12))
+            end
+        end
+        if stop then
+            if ShoxFFConn then ShoxFFConn:Disconnect(); ShoxFFConn = nil end
+            return
+        end
+        local v = root.AssemblyLinearVelocity
+        if v.Y > vy then root.AssemblyLinearVelocity = Vector3.new(v.X, vy, v.Z) end
+    end)
+end
+
 function doTpDown(force)
     local ok, err = pcall(function()
         local char = LP.Character
@@ -2658,6 +2701,14 @@ function doTpDown(force)
             ty = hit.Position.Y + ShoxGetStandOffset(humanoid, root)
         end
         if ty >= pos.Y - 0.5 then return end
+        if force ~= true then
+            -- Auto: kein Teleport (der bremste dich), nur schneller Fall mit unveraendertem X/Z-Tempo
+            if _G.ShoxATPDebug then
+                warn(string.format("[ShoxATP] Fast-Fall von Y=%.2f -> Ziel-Y=%.2f, Tempo X/Z=%.1f", pos.Y, ty, Vector3.new(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude))
+            end
+            ShoxFastFall()
+            return
+        end
         if _G.ShoxATPDebug then
             warn(string.format("[ShoxATP] TP von Y=%.2f -> Y=%.2f (%s, ray=%s)", pos.Y, ty, force == true and "manuell" or "auto", tostring(okG and hit ~= nil)))
         end
@@ -3731,6 +3782,70 @@ function ShoxIsCarrying()
     return v
 end
 
+-- v1.9.2: Carry-Latch. Nach dem Steal-Fire gilt "Brainrot getragen" feste Zeit, egal was die geratene Erkennung sagt.
+ShoxCarryLatchUntil = 0
+ShoxAPFullActive = false
+ShoxAPCapUntil = 0
+function ShoxCarryLatch(secs) ShoxCarryLatchUntil = os.clock() + (tonumber(secs) or 14) end
+function ShoxCarryLatched() return os.clock() < ShoxCarryLatchUntil end
+
+-- v1.9.2: Debug: _G.ShoxCarryDebug = true -> beim Steal werden Attribute/Kinder vorher/nachher verglichen (warn)
+function ShoxCarrySnap()
+    local s = {lp = {}, ch = {}, kids = {}}
+    pcall(function()
+        for k, v in pairs(LP:GetAttributes()) do s.lp[k] = v end
+        local c = LP.Character
+        if c then
+            for k, v in pairs(c:GetAttributes()) do s.ch[k] = v end
+            for _, o in ipairs(c:GetChildren()) do s.kids[o.Name .. ":" .. o.ClassName] = true end
+        end
+    end)
+    return s
+end
+function ShoxCarryDebugRun()
+    if not _G.ShoxCarryDebug then return end
+    local a = ShoxCarrySnap()
+    task.delay(1.2, function()
+        local b = ShoxCarrySnap()
+        for k, v in pairs(b.lp) do if a.lp[k] ~= v then warn("[ShoxCarry] Spieler-Attribut " .. k .. ": " .. tostring(a.lp[k]) .. " -> " .. tostring(v)) end end
+        for k, v in pairs(a.lp) do if b.lp[k] == nil then warn("[ShoxCarry] Spieler-Attribut weg: " .. k .. " (war " .. tostring(v) .. ")") end end
+        for k, v in pairs(b.ch) do if a.ch[k] ~= v then warn("[ShoxCarry] Char-Attribut " .. k .. ": " .. tostring(a.ch[k]) .. " -> " .. tostring(v)) end end
+        for k, v in pairs(a.ch) do if b.ch[k] == nil then warn("[ShoxCarry] Char-Attribut weg: " .. k .. " (war " .. tostring(v) .. ")") end end
+        for k in pairs(b.kids) do if not a.kids[k] then warn("[ShoxCarry] Char neues Kind: " .. k) end end
+        for k in pairs(a.kids) do if not b.kids[k] then warn("[ShoxCarry] Char Kind weg: " .. k) end end
+        warn("[ShoxCarry] Dump Ende (Carry gerade: " .. tostring(ShoxIsCarrying and ShoxIsCarrying()) .. ")")
+    end)
+end
+
+-- v1.9.2: Full Auto Steal: Tempo-Deckel NUR wenn du sonst waehrend des Holds aus der Reichweite laufen wuerdest
+ShoxStealCap = nil
+ShoxStealCapT = 0
+function ShoxStealCapGet()
+    if ShoxStealCap and os.clock() - ShoxStealCapT < 0.25 then return ShoxStealCap end
+    return nil
+end
+function ShoxStealCapUpdate(hrp, part, radius, remain)
+    if not hrp or not part or not part.Parent then ShoxStealCap = nil; return end
+    local p = hrp.Position - part.Position
+    local lv = hrp.AssemblyLinearVelocity
+    local v = Vector3.new(lv.X, 0, lv.Z)
+    local sp = v.Magnitude
+    if sp < 1 or remain <= 0.05 then ShoxStealCap = nil; return end
+    local a = v:Dot(v)
+    local b = 2 * p:Dot(v)
+    local c = p:Dot(p) - radius * radius
+    local te
+    if c >= 0 then
+        te = 0
+    else
+        local disc = b * b - 4 * a * c
+        if disc < 0 then te = 1e9 else te = (-b + math.sqrt(disc)) / (2 * a) end
+    end
+    if te >= remain + 0.15 then ShoxStealCap = nil; return end
+    ShoxStealCap = math.max(sp * math.max(te, 0.05) / (remain + 0.15), 8)
+    ShoxStealCapT = os.clock()
+end
+
 -- Attribut-Events: Cache sofort verwerfen, damit Carry nicht bis zu 0.1s zu spaet erkannt wird
 do
     local function bump() ShoxCarryCache.t = 0 end
@@ -4085,9 +4200,14 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     -- silently halved Auto Left/Right speed even when Lagger mode was disabled.
     local normalCap = math.max(tonumber(NS) or 60, 1)
     local speed = math.clamp(tonumber(requestedSpeed) or normalCap, 1, normalCap)
-    if ShoxIsCarrying and ShoxIsCarrying() then
-        speed = math.min(speed, math.max(tonumber(CarrySystem.carrySpeed) or 30, 1))
+    local carryCap = math.max(tonumber(CarrySystem.carrySpeed) or 30, 1)
+    if (ShoxIsCarrying and ShoxIsCarrying())
+       or (ShoxAPFullActive and ShoxCarryLatched and ShoxCarryLatched())
+       or os.clock() < (ShoxAPCapUntil or 0) then
+        speed = math.min(speed, carryCap)
     end
+    local scap = ShoxStealCapGet and ShoxStealCapGet()
+    if scap and scap < speed then speed = scap end
     local current = root.AssemblyLinearVelocity
     local desiredX = flat.Unit.X * speed
     local desiredZ = flat.Unit.Z * speed
@@ -4157,8 +4277,9 @@ function ShoxNoCollide(on, getTarget)
     end)
 end
 
--- v1.9.0: FULL-Modus. Nach L2/R2 zurueck ueber den Ausgang (L1/R1) und die Gasse zur Gegenseite,
--- mit Stuck-Erkennung (0.5s): 1x Springen, 2x seitlich ausweichen, 3x Wegpunkt ueberspringen.
+-- v1.9.2: FULL-Modus neu. Nach L2/R2 zurueck ueber L1/R1 zur Gegenseite.
+-- Carry-Latch (Brainrot gilt nach dem Steal fest als getragen), weiches Abbremsen am letzten Wegpunkt,
+-- Rubberband-Erkennung (Server-Rueckschlag > 8 Studs), Stuck-Erkennung nur mit Tempo und nicht am Ende.
 ShoxAutoFull = false
 function ShoxAPFullReturn(side)
     local isL = side == "L"
@@ -4166,18 +4287,24 @@ function ShoxAPFullReturn(side)
     local face = isL and AP.R_FACE or AP.L_FACE
     local idx, stuckN, lastPos, lastT, sideUntil, sideSign = 1, 0, nil, os.clock(), 0, 1
     local startedAt = os.clock()
+    local framePos, framePrevDir = nil, nil
     local tmpSteal = false
+    ShoxAPFullActive = true
+    ShoxCarryLatchUntil = 0
     if Steal and not Steal.AutoStealEnabled then
         tmpSteal = pcall(startAutoSteal)
     end
     table.clear(ShoxAPDist)
     local conn
     local function finish()
+        ShoxAPFullActive = false
+        ShoxStealCap = nil
         if tmpSteal then pcall(stopAutoSteal) end
         if isL then stopAutoLeft() else stopAutoRight() end
         local ch = LP.Character
         local rt = ch and ch:FindFirstChild("HumanoidRootPart")
         if rt then
+            rt.AssemblyLinearVelocity = _V3new(0, rt.AssemblyLinearVelocity.Y, 0)
             local fp = _V3new(face.X, rt.Position.Y, face.Z)
             if (fp - rt.Position).Magnitude > 0.01 then rt.CFrame = _CFnew(rt.Position, fp) end
         end
@@ -4190,24 +4317,44 @@ function ShoxAPFullReturn(side)
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
         local spd = math.max(0, tonumber(NS) or 0)
+        local lastP = list[#list]
         local tgtP = list[idx]
-        local tg = _V3new(tgtP.X, root.Position.Y, tgtP.Z)
-        if ShoxAPReached("F" .. idx, root, tg, dt, spd) then
+        local pos = root.Position
+        -- Rubberband: Position springt gegen die Laufrichtung zurueck -> kurz auf Carry-Tempo, neu ausrichten
+        if framePos and framePrevDir then
+            local back = _V3new(pos.X - framePos.X, 0, pos.Z - framePos.Z):Dot(framePrevDir)
+            if back < -8 then
+                ShoxAPCapUntil = now + 1.5
+                table.clear(ShoxAPDist)
+                lastPos = nil
+            end
+        end
+        local tg = _V3new(tgtP.X, pos.Y, tgtP.Z)
+        local flatD = _V3new(tgtP.X - pos.X, 0, tgtP.Z - pos.Z).Magnitude
+        local isLast = idx == #list
+        if ShoxAPReached("F" .. idx, root, tg, dt, spd) or (not isLast and flatD < 4) then
             idx = idx + 1; stuckN = 0; lastPos = nil
             if idx > #list then finish(); return end
             tgtP = list[idx]
+            isLast = idx == #list
+            flatD = _V3new(tgtP.X - pos.X, 0, tgtP.Z - pos.Z).Magnitude
         end
-        local d = tgtP - root.Position
+        local d = tgtP - pos
         local mv = _V3new(d.X, 0, d.Z)
         mv = mv.Magnitude > 0.001 and mv.Unit or _V3zero
-        -- Stuck: kaum Bewegung ueber 0.5s (nicht waehrend Steal-Hold)
+        framePos, framePrevDir = pos, (mv.Magnitude > 0 and mv or framePrevDir)
+        -- am letzten Wegpunkt weich abbremsen (ab 12 Studs linear), kein Ueberschiessen
+        local useSpd = spd
+        if isLast and flatD < 12 then
+            useSpd = math.max(spd * (flatD / 12), 6)
+        end
+        -- Stuck: kaum Bewegung ueber 0.5s (nicht beim Steal-Hold, nicht kurz vorm Ziel)
         if not lastPos then
-            lastPos, lastT = root.Position, now
+            lastPos, lastT = pos, now
         elseif now - lastT >= 0.5 then
-            local a, b = lastPos, root.Position
-            local moved = _V3new(a.X - b.X, 0, a.Z - b.Z).Magnitude
-            lastPos, lastT = b, now
-            if moved < 3 and not isStealing then
+            local moved = _V3new(lastPos.X - pos.X, 0, lastPos.Z - pos.Z).Magnitude
+            lastPos, lastT = pos, now
+            if moved < 3 and not isStealing and not (isLast and flatD < 14) and useSpd > 20 then
                 stuckN = stuckN + 1
                 if stuckN == 1 then
                     hum.Jump = true
@@ -4228,14 +4375,14 @@ function ShoxAPFullReturn(side)
             mv = (mv * 0.4 + perp).Unit
         end
         hum:Move(mv, false)
-        -- v1.9.1: kein Slow mehr beim Steal; mit Brainrot greift der Carry-Cap in applyAutoPathVelocity
-        applyAutoPathVelocity(root, mv, spd, dt)
+        applyAutoPathVelocity(root, mv, useSpd, dt)
     end)
     if isL then alConn = conn else arConn = conn end
 end
 
 function stopAutoLeft()
     autoLeftEnabled = false
+    ShoxAPFullActive = false
     if alConn then alConn:Disconnect(); alConn = nil end
     alPhase = 1
     local char = LP.Character
@@ -4270,6 +4417,8 @@ function startAutoLeft()
     _suppressBodyLock()
     if alConn then alConn:Disconnect() end
     alPhase = 1
+    ShoxCarryLatchUntil = 0
+    ShoxAPCapUntil = 0
     table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.L1 - (LP.Character and LP.Character:GetPivot().Position or AP.L1)).Magnitude + (AP.L2 - AP.L1).Magnitude
@@ -4342,6 +4491,7 @@ end
 
 function stopAutoRight()
     autoRightEnabled = false
+    ShoxAPFullActive = false
     if arConn then arConn:Disconnect(); arConn = nil end
     arPhase = 1
     local char = LP.Character
@@ -4376,6 +4526,8 @@ function startAutoRight()
     _suppressBodyLock()
     if arConn then arConn:Disconnect() end
     arPhase = 1
+    ShoxCarryLatchUntil = 0
+    ShoxAPCapUntil = 0
     table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.R1 - (LP.Character and LP.Character:GetPivot().Position or AP.R1)).Magnitude + (AP.R2 - AP.R1).Magnitude
@@ -6194,6 +6346,8 @@ function setupMovementAndIndicators(char)
             else
                 local md = hum.MoveDirection
                 local spd = getActiveMoveSpeed()
+                local scap = ShoxStealCapGet and ShoxStealCapGet()
+                if scap and scap < spd then spd = scap end
                 local dir = nil
                 if md.Magnitude > 0 then
                     lastMoveDir = md
