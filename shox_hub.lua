@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.7.3"
+ShoxHubState.Version     = "v1.7.4"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -1575,506 +1575,6 @@ _G.__tpBatV2Distance = 8
 local CoreGui = game:GetService("CoreGui")
 
 katanaSkinEnabled = false
-
-local KatanaSkin = (function()
-    local Players       = game:GetService("Players")
-    local InsertService = game:GetService("InsertService")
-    local Lighting2     = game:GetService("Lighting")
-    local ReplicatedStorage2 = game:GetService("ReplicatedStorage")
-    local LocalPlayer   = Players.LocalPlayer
-
-    local KC = {
-        red  = Color3.new(0.784314, 0, 0),
-        red2 = Color3.new(1, 0.392157, 0.392157),
-        gold = Color3.new(1, 0.72549, 0.196078),
-    }
-
-    local State = {
-        Skin = "KATANA",
-        SkinOrder = { "KATANA", "NONE" },
-        LastBat = nil,
-        LastAppliedSkin = nil,
-        OriginalKatanaTemplate = nil,
-        ExactTemplates = {},
-        ExactTemplateSearched = {},
-        ExactAssetIds = { KATANA = "" },
-        Original = {},
-    }
-
-    local function findBatForKatanaSkin()
-        local char = LocalPlayer.Character
-        if char then
-            local t = char:FindFirstChild("Bat")
-            if t and t:IsA("Tool") then return t end
-        end
-        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
-        if bp then
-            local t = bp:FindFirstChild("Bat")
-            if t and t:IsA("Tool") then return t end
-        end
-        return nil
-    end
-
-    local function setPartSafe(part)
-        if not part or not part:IsA("BasePart") then return end
-        part.Anchored    = false
-        part.CanCollide  = false
-        part.CanTouch    = false
-        part.CanQuery    = false
-        part.Massless    = true
-    end
-
-    local function weldToHandle(part, handle)
-        if not part or not handle or not part:IsA("BasePart") or not handle:IsA("BasePart") then return end
-        setPartSafe(part)
-        local w = Instance.new("WeldConstraint")
-        w.Name   = "FlowerSkin_AssetWeld"
-        w.Part0  = handle
-        w.Part1  = part
-        w.Parent = part
-    end
-
-    local function rememberOriginal(tool)
-        if not tool then return end
-        local handle = tool:FindFirstChild("Handle")
-        local slash  = tool:FindFirstChild("Slash")
-        State.Original[tool] = State.Original[tool] or {}
-        local o = State.Original[tool]
-        if handle and handle:IsA("BasePart") and not o.Handle then
-            o.Handle = {
-                Transparency = handle.Transparency,
-                LocalTransparencyModifier = handle.LocalTransparencyModifier,
-                CastShadow = handle.CastShadow,
-            }
-        end
-        if slash and slash:IsA("Sound") and not o.SlashSoundId then
-            o.SlashSoundId = slash.SoundId
-        end
-    end
-
-    local function captureKatanaTemplate()
-        if State.OriginalKatanaTemplate then return end
-        local function scan(container)
-            if not container then return end
-            local bat = container:FindFirstChild("Bat")
-            if not bat then return end
-            local folder = bat:FindFirstChild("FlowerSkin_KatanaRealistic")
-            local asset  = folder and folder:FindFirstChild("FlowerSkin_AssetKatana")
-            if asset then State.OriginalKatanaTemplate = asset:Clone() end
-        end
-        scan(LocalPlayer:FindFirstChildOfClass("Backpack"))
-        scan(LocalPlayer.Character)
-    end
-
-    local function hideOriginalHandle(tool, hidden)
-        local handle = tool and tool:FindFirstChild("Handle")
-        if not handle or not handle:IsA("BasePart") then return end
-        rememberOriginal(tool)
-        if hidden then
-            handle.LocalTransparencyModifier = 1
-            handle.Transparency = 1
-            handle.CastShadow = false
-        else
-            local o = State.Original[tool] and State.Original[tool].Handle
-            handle.LocalTransparencyModifier = o and o.LocalTransparencyModifier or 0
-            handle.Transparency = o and o.Transparency or 0
-            handle.CastShadow = o and o.CastShadow
-            if handle.CastShadow == nil then handle.CastShadow = true end
-        end
-    end
-
-    local function setSlashSound(tool, soundId)
-        rememberOriginal(tool)
-        local slash = tool and tool:FindFirstChild("Slash")
-        if slash and slash:IsA("Sound") then
-            slash.SoundId = soundId or ((State.Original[tool] and State.Original[tool].SlashSoundId) or slash.SoundId)
-        end
-    end
-
-    local function removeSkin(tool)
-        if not tool then return end
-        local oldFolder = tool:FindFirstChild("FlowerSkin_KatanaRealistic")
-        if oldFolder then oldFolder:Destroy() end
-        local oldLoose = tool:FindFirstChild("FlowerSkin_AssetKatana")
-        if oldLoose then oldLoose:Destroy() end
-        hideOriginalHandle(tool, false)
-        setSlashSound(tool, nil)
-    end
-
-    local function addRedVFX(parentPart)
-        if not parentPart or not parentPart:IsA("BasePart") then return end
-        local existing = parentPart:FindFirstChild("FlowerSkin_ExtraRedVFX")
-        if existing then existing:Destroy() end
-
-        local top = Instance.new("Attachment")
-        top.Name = "FlowerSkin_ExtraRedVFX"
-        top.Position = Vector3.new(0, parentPart.Size.Y * 0.5, 0)
-        top.Parent = parentPart
-
-        local bottom = Instance.new("Attachment")
-        bottom.Name = "FlowerSkin_ExtraRedVFX_End"
-        bottom.Position = Vector3.new(0, -parentPart.Size.Y * 0.5, 0)
-        bottom.Parent = parentPart
-
-        local trail = Instance.new("Trail")
-        trail.Name = "FlowerSkin_ExtraRedVFX"
-        trail.Attachment0 = top
-        trail.Attachment1 = bottom
-        trail.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, KC.red2),
-            ColorSequenceKeypoint.new(1, Color3.new(0.54902, 0, 0)),
-        })
-        trail.Transparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.35),
-            NumberSequenceKeypoint.new(1, 1),
-        })
-        trail.Lifetime = 0.18
-        trail.LightEmission = 0.55
-        trail.Parent = parentPart
-
-        local emitter = Instance.new("ParticleEmitter")
-        emitter.Name = "FlowerSkin_ExtraRedVFX"
-        emitter.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.new(0.784314, 0, 0)),
-            ColorSequenceKeypoint.new(1, KC.red2),
-        })
-        emitter.LightEmission = 0.55
-        emitter.Rate = 14
-        emitter.Lifetime = NumberRange.new(0.25, 0.45)
-        emitter.Speed = NumberRange.new(0.2, 0.7)
-        emitter.SpreadAngle = Vector2.new(12, 12)
-        emitter.Size = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.08),
-            NumberSequenceKeypoint.new(1, 0),
-        })
-        emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-        emitter.Parent = parentPart
-    end
-
-    local function newPart(parent, name, size, offset, color, material)
-        local p = Instance.new("Part")
-        p.Name = name
-        p.Size = size
-        p.Color = color
-        p.Material = material or Enum.Material.Neon
-        p.TopSurface = Enum.SurfaceType.Smooth
-        p.BottomSurface = Enum.SurfaceType.Smooth
-        setPartSafe(p)
-        p.Parent = parent
-        return p, offset or CFrame.identity
-    end
-
-    local EXACT_TEMPLATE_NAMES = {
-        KATANA = { "FlowerSkin_AssetKatana", "Katana", "FlowerSkin_KatanaRealistic" },
-    }
-
-    local function isScriptObject(inst)
-        return inst:IsA("Script") or inst:IsA("LocalScript") or inst:IsA("ModuleScript")
-    end
-
-    local function stripScripts(root)
-        if not root then return end
-        if isScriptObject(root) then root:Destroy(); return end
-        for _, inst in ipairs(root:GetDescendants()) do
-            if isScriptObject(inst) then inst:Destroy() end
-        end
-    end
-
-    local function hasAnyBasePart(root)
-        if not root then return false end
-        if root:IsA("BasePart") then return true end
-        return root:FindFirstChildWhichIsA("BasePart", true) ~= nil
-    end
-
-    local function isGeneratedProxy(root)
-        local ok, v = pcall(function() return root:GetAttribute("CursedBatSkinsGenerated") end)
-        return ok and v == true
-    end
-
-    local function usableTemplate(root)
-        if not root or isGeneratedProxy(root) then return nil end
-        if root:IsA("Model") or root:IsA("Tool") or root:IsA("Folder") or root:IsA("BasePart") then
-            if hasAnyBasePart(root) then return root end
-        end
-        return nil
-    end
-
-    local function findUsableNamed(root, names)
-        if not root then return nil end
-        for _, name in ipairs(names) do
-            if root.Name == name then
-                local d = usableTemplate(root)
-                if d then return d end
-            end
-        end
-        for _, name in ipairs(names) do
-            local found = root:FindFirstChild(name, true)
-            local u = usableTemplate(found)
-            if u then return u end
-        end
-        return nil
-    end
-
-    local function assetTextFromId(assetId)
-        local raw = tostring(assetId or ""):gsub("%s+", "")
-        if raw == "" then return nil end
-        if raw:match("^rbxassetid://") or raw:match("^rbxasset://") then return raw end
-        if raw:match("^%d+$") then return "rbxassetid://" .. raw end
-        return raw
-    end
-
-    local function loadExactTemplateFromAssetId(skinName)
-        local assetText = assetTextFromId(State.ExactAssetIds[skinName])
-        if not assetText then return nil end
-        local loaded = {}
-        pcall(function() loaded = game:GetObjects(assetText) end)
-        if #loaded == 0 then
-            local id = tostring(assetText):match("(%d+)")
-            if id then
-                pcall(function()
-                    table.insert(loaded, InsertService:LoadAsset(tonumber(id)))
-                end)
-            end
-        end
-        local names = EXACT_TEMPLATE_NAMES[skinName] or {}
-        for _, root in ipairs(loaded) do
-            local exact = findUsableNamed(root, names) or usableTemplate(root)
-            if exact then
-                local clone = exact:Clone()
-                stripScripts(clone)
-                return clone
-            end
-        end
-        return nil
-    end
-
-    local function findExactTemplateInGame(skinName)
-        local names = EXACT_TEMPLATE_NAMES[skinName]
-        if not names then return nil end
-        local containers = {
-            LocalPlayer.Character,
-            LocalPlayer:FindFirstChildOfClass("Backpack"),
-            ReplicatedStorage2,
-            Lighting2,
-            workspace,
-        }
-        for _, container in ipairs(containers) do
-            local source = findUsableNamed(container, names)
-            if source then
-                local clone = source:Clone()
-                stripScripts(clone)
-                return clone
-            end
-        end
-        return nil
-    end
-
-    local function getExactTemplate(skinName)
-        if skinName == "KATANA" and State.OriginalKatanaTemplate then
-            return State.OriginalKatanaTemplate
-        end
-        if State.ExactTemplates[skinName] then return State.ExactTemplates[skinName] end
-        if State.ExactTemplateSearched[skinName] then return nil end
-        State.ExactTemplateSearched[skinName] = true
-        local loaded = loadExactTemplateFromAssetId(skinName) or findExactTemplateInGame(skinName)
-        if loaded then State.ExactTemplates[skinName] = loaded end
-        return loaded
-    end
-
-    local function containerToModel(clone, folder)
-        if clone:IsA("Model") then
-            clone.Name = "FlowerSkin_AssetKatana"
-            clone.Parent = folder
-            return clone
-        end
-        if clone:IsA("BasePart") then
-            local model = Instance.new("Model")
-            model.Name = "FlowerSkin_AssetKatana"
-            model.Parent = folder
-            clone.Parent = model
-            return model
-        end
-        if clone:IsA("Tool") or clone:IsA("Folder") then
-            local nested = clone:FindFirstChild("FlowerSkin_AssetKatana")
-                or clone:FindFirstChildWhichIsA("Model")
-                or clone:FindFirstChildWhichIsA("BasePart")
-            if nested and nested.Parent == clone then
-                nested.Parent = nil
-                clone:Destroy()
-                return containerToModel(nested, folder)
-            end
-            local model = Instance.new("Model")
-            model.Name = "FlowerSkin_AssetKatana"
-            model.Parent = folder
-            for _, child in ipairs(clone:GetChildren()) do
-                if not isScriptObject(child) then child.Parent = model end
-            end
-            clone:Destroy()
-            return model
-        end
-        return nil
-    end
-
-    local function applyExactMesh(tool, skinName)
-        local handle = tool and tool:FindFirstChild("Handle")
-        if not handle or not handle:IsA("BasePart") then return false end
-        local template = getExactTemplate(skinName)
-        if not template then return false end
-
-        local folder = Instance.new("Folder")
-        folder.Name = "FlowerSkin_KatanaRealistic"
-        folder.Parent = tool
-
-        local model = containerToModel(template:Clone(), folder)
-        if not model or not hasAnyBasePart(model) then
-            folder:Destroy()
-            return false
-        end
-        stripScripts(model)
-        pcall(function() model:SetAttribute("CursedBatSkinsExactMesh", true) end)
-
-        local firstPart
-        for _, inst in ipairs(model:GetDescendants()) do
-            if inst:IsA("BasePart") then
-                firstPart = firstPart or inst
-                setPartSafe(inst)
-            end
-        end
-        if not firstPart then folder:Destroy(); return false end
-
-        if model:IsA("Model") then
-            model.PrimaryPart = model.PrimaryPart or firstPart
-            pcall(function() model:PivotTo(handle.CFrame) end)
-        end
-        for _, inst in ipairs(model:GetDescendants()) do
-            if inst:IsA("BasePart") then weldToHandle(inst, handle) end
-        end
-
-        local vfxPart = model:FindFirstChild("SharpParts", true)
-            or model:FindFirstChild("WeaponPart", true)
-            or model:FindFirstChild("Handle", true)
-            or firstPart
-        if vfxPart and not vfxPart:FindFirstChild("FlowerSkin_ExtraRedVFX") then
-            addRedVFX(vfxPart)
-        end
-        return true
-    end
-
-    local function buildProxyModel(tool, skinName)
-        local handle = tool and tool:FindFirstChild("Handle")
-        if not handle or not handle:IsA("BasePart") then return nil end
-
-        local folder = Instance.new("Folder")
-        folder.Name = "FlowerSkin_KatanaRealistic"
-        folder.Parent = tool
-
-        local model = Instance.new("Model")
-        model.Name = "FlowerSkin_AssetKatana"
-        model:SetAttribute("CursedBatSkinsGenerated", true)
-        model.Parent = folder
-
-        local parts = {}
-        local function add(name, size, offset, color, material)
-            local part, cfOffset = newPart(model, name, size, offset, color, material)
-            part.CFrame = handle.CFrame * cfOffset
-            weldToHandle(part, handle)
-            table.insert(parts, part)
-            return part
-        end
-
-        if skinName == "KATANA" then
-            add("Handle2", Vector3.new(0.22, 1.0, 0.22), CFrame.new(0, -0.85, 0), Color3.new(0.04, 0.04, 0.045), Enum.Material.Metal)
-            local sharp = add("SharpParts", Vector3.new(0.22, 3.35, 0.12), CFrame.new(0, 1.05, 0), KC.red2, Enum.Material.Neon)
-            add("WeaponPart", Vector3.new(0.3, 2.7, 0.08), CFrame.new(0.08, 1.15, 0), KC.red, Enum.Material.Neon)
-            add("NeonAccent", Vector3.new(0.75, 0.12, 0.42), CFrame.new(0, -0.28, 0), KC.gold, Enum.Material.Neon)
-            addRedVFX(sharp)
-        end
-        model.PrimaryPart = parts[1]
-        return model
-    end
-
-    local SKIN_SOUND_IDS = {
-        KATANA = "rbxassetid://111808555599832",
-    }
-
-    local function applySkin(skinName)
-        if skinName ~= "KATANA" and skinName ~= "NONE" then return false end
-        captureKatanaTemplate()
-        local tool = findBatForKatanaSkin()
-        if not tool then
-            -- NONE must also clean up the previously applied tool if it is
-            -- temporarily outside Character/Backpack but still exists.
-            local previousBat = State.LastBat
-            if skinName == "NONE" and previousBat and previousBat.Parent then
-                pcall(function() removeSkin(previousBat) end)
-            end
-            State.LastBat = nil
-            State.LastAppliedSkin = nil
-            return false
-        end
-        rememberOriginal(tool)
-        removeSkin(tool)
-        if skinName == "NONE" then
-            State.LastBat = tool
-            State.LastAppliedSkin = "NONE"
-            return true
-        end
-        hideOriginalHandle(tool, true)
-        setSlashSound(tool, SKIN_SOUND_IDS[skinName])
-        if not applyExactMesh(tool, skinName) then
-            buildProxyModel(tool, skinName)
-        end
-        local handle = tool:FindFirstChild("Handle")
-        if handle then
-            local fire = handle:FindFirstChildOfClass("Fire") or handle:FindFirstChild("Fire")
-            if fire and fire:IsA("Fire") then
-                fire.Enabled = true
-                fire.Color = KC.red
-                fire.SecondaryColor = KC.red2
-            end
-        end
-        State.LastBat = tool
-        State.LastAppliedSkin = skinName
-        return true
-    end
-
-    return {
-        State = State,
-        ApplySkin = applySkin,
-        SetExactAssetId = function(assetId)
-            State.ExactAssetIds.KATANA = tostring(assetId or "")
-            State.ExactTemplateSearched.KATANA = nil
-            State.ExactTemplates.KATANA = nil
-        end,
-    }
-end)()
-
-_G.CursedBatKatana = KatanaSkin
-
-task.spawn(function()
-    while true do
-        if katanaSkinEnabled then
-            local bat
-            local c = LP.Character
-            if c then
-                local t = c:FindFirstChild("Bat")
-                if t and t:IsA("Tool") then bat = t end
-            end
-            if not bat then
-                local bp = LP:FindFirstChildOfClass("Backpack")
-                if bp then
-                    local t = bp:FindFirstChild("Bat")
-                    if t and t:IsA("Tool") then bat = t end
-                end
-            end
-            if bat and (bat ~= KatanaSkin.State.LastBat or KatanaSkin.State.LastAppliedSkin ~= "KATANA") then
-                pcall(function() KatanaSkin.ApplySkin("KATANA") end)
-            end
-        end
-        task.wait(0.5)
-    end
-end)
-
 minecraftBatSkinEnabled = false
 minecraftBatSkinColorMode = "Default"
 MinecraftBatSetVisual = nil
@@ -4865,7 +4365,7 @@ function trySwing()
             return
         end
         bat:Activate()
-        _nextBatSwingAt = now + 0.1
+        _nextBatSwingAt = now + 0.25
     end)
     if not ok then _nextBatSwingAt = now + 0.2 end
 end
@@ -4968,11 +4468,13 @@ function startAimbotAdapt()
         local pz = tPos.Z + flatV.Z * lead - myPos.Z
         local pm = _sqrt(px * px + pz * pz)
 
+        -- v1.7.4: Abstand halten (3.5 Studs), weich abbremsen, nie in den Gegner druecken
         local desired
-        if pm < 3 then
-            desired = flatV -- direkt am Ziel: mitlaufen statt drueberschiessen
+        if pm <= 3.5 then
+            desired = flatV
         else
-            desired = _V3new(px / pm * speed, 0, pz / pm * speed)
+            local f = math.min(speed, (pm - 3.5) * 12 + flatV.Magnitude)
+            desired = _V3new(px / pm * f, 0, pz / pm * f)
         end
 
         -- Nur X/Z setzen; Y bleibt Physik (vorher: dauerhaft +45 Y nach oben -> Fliegen/Zittern)
@@ -4997,7 +4499,7 @@ function startAimbotAdapt()
             root.AssemblyAngularVelocity = _V3zero
         end
 
-        if (tPos - myPos).Magnitude <= 11 then trySwing() end
+        if flatDist <= 7 and _abs(tPos.Y - myPos.Y) <= 6 then trySwing() end
     end)
 end
 
@@ -5315,10 +4817,11 @@ function BB.Start()
         local pm = math.sqrt(px * px + pz * pz)
 
         local desired
-        if pm < 3 then
+        if pm <= 3.5 then
             desired = vel
         else
-            desired = Vector3.new(px / pm * followSpeed, 0, pz / pm * followSpeed)
+            local f = math.min(followSpeed, (pm - 3.5) * 12 + vel.Magnitude)
+            desired = Vector3.new(px / pm * f, 0, pz / pm * f)
         end
 
         local cv = root.AssemblyLinearVelocity
@@ -5333,7 +4836,17 @@ function BB.Start()
         end
 
         -- Yaw direkt auf das Ziel (vorher asin()-Winkel: Ziel hinter dir -> kaum Drehung)
-        if flatDist > 0.5 then
+        if flatDist <= 10 then
+            -- v1.7.4 Bypass = Aimbot (Anlauf) + TP-Snap (Nahbereich): auf deiner Seite 3.2 Studs vor dem
+            -- vorausberechneten Ziel platzieren, Blick aufs Ziel -> Server sieht Gegner direkt vor dir
+            local l2 = math.clamp(Z.currentPing + 0.08, 0, 0.3)
+            local ax, az = targetPos.X + vel.X * l2, targetPos.Z + vel.Z * l2
+            local bx, bz = myPos.X - ax, myPos.Z - az
+            local bm = math.sqrt(bx * bx + bz * bz)
+            if bm < 0.1 then bx, bz, bm = 0, 1, 1 end
+            root.CFrame = CFrame.lookAt(Vector3.new(ax + bx / bm * 3.2, myPos.Y, az + bz / bm * 3.2), Vector3.new(ax, myPos.Y, az))
+            root.AssemblyAngularVelocity = Vector3.zero
+        elseif flatDist > 0.5 then
             local goalYaw = math.atan2(-dx, -dz)
             local _, curYaw = root.CFrame:ToEulerAnglesYXZ()
             local dYaw = (goalYaw - curYaw + math.pi) % (2 * math.pi) - math.pi
@@ -5597,7 +5110,7 @@ local function tpBatHit()
     if bat.Parent ~= LP.Character then return end
     _tpBatHitCooldown = true
     pcall(function() bat:Activate() end)
-    task.delay(0.12, function() _tpBatHitCooldown = false end)
+    task.delay(0.25, function() _tpBatHitCooldown = false end)
 end
 
 -- ══════════════════════════════════════════════════════
@@ -5646,7 +5159,11 @@ local function tpBatFollowTarget(root, targetRoot)
     if not root or not root.Parent or not targetRoot or not targetRoot.Parent then
         return false
     end
-    local tPos = targetRoot.Position
+    -- v1.7.4: Ziel-Vorhalt (Ping + Interpolation), sonst sieht der Server den Gegner schon weiter vorn
+    local fv0 = targetRoot.AssemblyLinearVelocity
+    local fv = Vector3.new(fv0.X, 0, fv0.Z)
+    if fv.Magnitude > 60 then fv = fv.Unit * 60 end
+    local tPos = targetRoot.Position + fv * math.clamp(ShoxGetPingSec() + 0.08, 0.05, 0.3)
     local look = targetRoot.CFrame.LookVector
     local flat = Vector3.new(look.X, 0, look.Z)
     if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) else flat = flat.Unit end
@@ -7585,7 +7102,7 @@ function loadAllSettings()
     CONFIG.STEAL_RANGE = readNumber(data.stealRadius, CONFIG.STEAL_RANGE, 1, 500)
     if radInput then radInput.Text = tostring(CONFIG.STEAL_RANGE) end
     uiLocked = data.lockUI == true
-    editModeEnabled = data.editMode == true
+    editModeEnabled = false
     mobileButtonsLocked = data.mobileButtonsLocked == true
     if data.antiRagdollMode then
         antiRagdollMode = data.antiRagdollMode
@@ -7625,7 +7142,7 @@ function loadAllSettings()
         if autoBatV2SetVisual then autoBatV2SetVisual(false) end
     end
 
-    katanaSkinEnabled = data.katanaSkinEnabled or false
+    katanaSkinEnabled = false
     minecraftBatSkinEnabled = data.minecraftBatSkinEnabled or false
     minecraftBatSkinColorMode = data.minecraftBatSkinColorMode or "Default"
     if MinecraftBatSetVisual then MinecraftBatSetVisual(minecraftBatSkinEnabled) end
@@ -7644,9 +7161,6 @@ function loadAllSettings()
     ShoxHubShowE01Warning = data.shoxHubShowE01Warning == true
     if ShoxHubAutoTPDownSetVisual then ShoxHubAutoTPDownSetVisual(ShoxHubAutoTPDown) end
     if ShoxHubShowE01WarningSetVisual then ShoxHubShowE01WarningSetVisual(ShoxHubShowE01Warning) end
-    if katanaSkinEnabled then
-        task.defer(function() pcall(function() KatanaSkin.ApplySkin("KATANA") end) end)
-    end
     tpBatVersion = 1
     _G.__tpBatV2Distance = 8
 
@@ -7905,7 +7419,9 @@ function forceResetUI()
     safeSet(setUnwalkVisual, false)
     safeSet(setAntiLagVisual, false)
     safeSet(setLockUIVisual, false)
-    safeSet(setEditModeVisual, false)
+    if ShoxSetLockBtnsVisual then ShoxSetLockBtnsVisual(false) end
+    if ShoxHideMasterVisual then ShoxHideMasterVisual(false) end
+    for _, f in pairs(ShoxHideItemVisuals or {}) do pcall(f) end
     safeSet(setInstaGrab, false)
     safeSet(batDesyncTpSetVisual, false)
     safeSet(setESPVIsual, false)
@@ -8134,7 +7650,6 @@ function resetToFactoryDefaults()
         bodyLockRange = 20
         autoBatV2Enabled = false
         katanaSkinEnabled = false
-        pcall(function() KatanaSkin.ApplySkin("NONE") end)
         minecraftBatSkinEnabled = false
         minecraftBatSkinColorMode = "Default"
         MinecraftBatSkin.State.enabled = false
@@ -8498,18 +8013,6 @@ function buildGui()
         mainStroke.Thickness = 1.2
         mainStroke.Transparency = 0.2
     end
-
-    backgroundImage = Instance.new("ImageLabel", main)
-    backgroundImage.Name = "BackgroundImage"
-    backgroundImage.Size = UDim2.new(1, 0, 1, 0)
-    backgroundImage.Position = UDim2.new(0, 0, 0, 0)
-    backgroundImage.BackgroundTransparency = 1
-    backgroundImage.BorderSizePixel = 0
-    backgroundImage.Image = ""
-    backgroundImage.ScaleType = Enum.ScaleType.Stretch
-    backgroundImage.ImageTransparency = 1
-    backgroundImage.ZIndex = 1
-    Instance.new("UICorner", backgroundImage).CornerRadius = UDim.new(0, 18)
 
     mainUIScale = Instance.new("UIScale", main)
     mainUIScale.Scale = uiScaleValue / 100
@@ -9668,15 +9171,6 @@ function buildGui()
     local visualPage = contentPages["Visual"]
 
     mkSect(visualPage, "Interface")
-    setEditModeVisual = mkToggle(visualPage, "Edit Button", function(on)
-        toggleEditMode(on)
-        if on and uiLocked then
-            editModeEnabled = false
-            setEditModeVisual(false)
-        end
-    end)
-    if setEditModeVisual then setEditModeVisual(editModeEnabled) end
-
     setLockUIVisual = mkToggle(visualPage, "Lock UI", function(on)
         toggleLockUI(on)
         if on and editModeEnabled then
@@ -9760,17 +9254,6 @@ function buildGui()
 
     mkSect(visualPage, "Personalización")
 
-    local katanaSkinSetVisual = mkToggle(visualPage, "Bat Skin", function(on)
-        katanaSkinEnabled = on
-        if on then
-            pcall(function() KatanaSkin.ApplySkin("KATANA") end)
-        else
-            pcall(function() KatanaSkin.ApplySkin("NONE") end)
-        end
-        saveAllSettings()
-    end)
-    if katanaSkinSetVisual then katanaSkinSetVisual(katanaSkinEnabled) end
-
     MinecraftBatSetVisual = mkToggle(visualPage, "Minecraft Bat", function(on)
         minecraftBatSkinEnabled = on
         MinecraftBatSkin.State.enabled = on
@@ -9831,114 +9314,6 @@ function buildGui()
         end)
     end
 
-    do
-        local row = mkRow(visualPage, 56)
-        mkLabel(row, "Background")
-
-        local previewFrame = Instance.new("Frame", row)
-        previewFrame.Name = "BackgroundPreview"
-        previewFrame.Size = UDim2.new(0, 56, 0, 44)
-        previewFrame.Position = UDim2.new(1, -250, 0.5, -22)
-        previewFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-        previewFrame.BackgroundTransparency = 0.15
-        previewFrame.BorderSizePixel = 0
-        previewFrame.ClipsDescendants = true
-        previewFrame.ZIndex = 8
-        Instance.new("UICorner", previewFrame).CornerRadius = UDim.new(0, 8)
-
-        local previewStroke = Instance.new("UIStroke", previewFrame)
-        previewStroke.Color = ROW_BORDER
-        previewStroke.Thickness = 1.2
-        previewStroke.Transparency = 0.35
-
-        local previewImage = Instance.new("ImageLabel", previewFrame)
-        previewImage.Name = "PreviewImage"
-        previewImage.Size = UDim2.new(1, 0, 1, 0)
-        previewImage.Position = UDim2.new(0, 0, 0, 0)
-        previewImage.BackgroundTransparency = 1
-        previewImage.Image = ""
-        previewImage.ScaleType = Enum.ScaleType.Crop
-        previewImage.ZIndex = 9
-        Instance.new("UICorner", previewImage).CornerRadius = UDim.new(0, 8)
-
-        local previewPlaceholder = Instance.new("TextLabel", previewFrame)
-        previewPlaceholder.Name = "PreviewPlaceholder"
-        previewPlaceholder.Size = UDim2.new(1, 0, 1, 0)
-        previewPlaceholder.BackgroundTransparency = 1
-        previewPlaceholder.Text = "OFF"
-        previewPlaceholder.TextColor3 = Color3.fromRGB(161, 161, 161)
-        previewPlaceholder.Font = SHOX_UI_FONT
-        previewPlaceholder.TextSize = 12
-        previewPlaceholder.ZIndex = 10
-
-        local function updateBackgroundPreview(idx)
-            local cfg = BACKGROUND_IMAGES[idx]
-            if not cfg or not cfg.id or cfg.id == "" then
-                previewImage.Image = ""
-                previewPlaceholder.Visible = true
-                previewStroke.Color = ROW_BORDER
-            else
-                previewImage.Image = cfg.id
-                previewPlaceholder.Visible = false
-                previewStroke.Color = getThemeColor()
-            end
-        end
-
-        local function animatePreview()
-            previewFrame.Size = UDim2.new(0, 56, 0, 44)
-            TS:Create(previewFrame, TweenInfo.new(0.15, Enum.EasingStyle.Back), {
-                Size = UDim2.new(0, 60, 0, 47),
-            }):Play()
-            task.delay(0.15, function()
-                TS:Create(previewFrame, TweenInfo.new(0.15), {
-                    Size = UDim2.new(0, 56, 0, 44),
-                }):Play()
-            end)
-        end
-
-        previewFrame.MouseEnter:Connect(function()
-            TS:Create(previewStroke, TweenInfo.new(0.12), {
-                Color = getThemeColor(),
-                Transparency = 0.05,
-            }):Play()
-        end)
-        previewFrame.MouseLeave:Connect(function()
-            local cfg = BACKGROUND_IMAGES[backgroundIndex]
-            local isOff = (not cfg) or (not cfg.id) or (cfg.id == "")
-            TS:Create(previewStroke, TweenInfo.new(0.12), {
-                Color = isOff and ROW_BORDER or getThemeColor(),
-                Transparency = isOff and 0.35 or 0.2,
-            }):Play()
-        end)
-
-        local options = {}
-        for _, bg in ipairs(BACKGROUND_IMAGES) do
-            table.insert(options, bg.label)
-        end
-
-        backgroundSelectorLabel = mkNeoSelector(row, BACKGROUND_IMAGES[backgroundIndex].label, options, function(selected)
-            for i, bg in ipairs(BACKGROUND_IMAGES) do
-                if bg.label == selected then
-                    applyBackground(i)
-                    updateBackgroundPreview(i)
-                    animatePreview()
-                    saveAllSettings()
-                    break
-                end
-            end
-        end)
-
-        if backgroundSelectorLabel then
-            local selContainer = backgroundSelectorLabel.Parent
-            if selContainer and selContainer:IsA("Frame") then
-                selContainer.Size = UDim2.new(0, 175, 0, 30)
-                selContainer.Position = UDim2.new(1, -183, 0.5, -15)
-            end
-        end
-
-        updateBackgroundPreview(backgroundIndex)
-    end
-
     local configPage = contentPages["Settings"]
 
     mkSect(configPage, "Intro")
@@ -9993,7 +9368,7 @@ function buildGui()
     mkSect(configPage, "Mobile Buttons")
 
     do
-        local setMobileButtonsLocked = mkToggle(configPage, "Lock Buttons", function(on)
+        ShoxSetLockBtnsVisual = mkToggle(configPage, "Lock Buttons", function(on)
             mobileButtonsLocked = (on == true)
             _isDraggingButton = false
             if MobilePanel and MobilePanel:FindFirstChild("FloatingPanel") then
@@ -10008,7 +9383,7 @@ function buildGui()
             end
             saveAllSettings()
         end)
-        setMobileButtonsLocked(mobileButtonsLocked)
+        ShoxSetLockBtnsVisual(mobileButtonsLocked)
     end
 
     do
@@ -10021,6 +9396,7 @@ function buildGui()
             animPill(pill, dot, s)
         end
         sv(onState)
+        ShoxHideMasterVisual = function(s) sv(s) end
         local clk = Instance.new("TextButton", pill)
         clk.Size = UDim2.new(1,0,1,0)
         clk.BackgroundTransparency = 1
@@ -10061,6 +9437,7 @@ function buildGui()
         local listPad = Instance.new("UIPadding", listHolder)
         listPad.PaddingTop = UDim.new(0, 4)
 
+        ShoxHideItemVisuals = {}
         for i, item in ipairs(HIDE_BUTTONS_ITEMS) do
             local r = Instance.new("Frame", listHolder)
             r.Name = "HideOpt_" .. item.key
@@ -10120,6 +9497,7 @@ function buildGui()
             clk.Text = ""
             clk.AutoButtonColor = false
             clk.ZIndex = 10
+            ShoxHideItemVisuals[item.key] = function() animPill(track, dot, _G.AmbitiousMobileHideIncluded(item.key)) end
             clk.MouseButton1Click:Connect(function()
                 local on = not _G.AmbitiousMobileHideIncluded(item.key)
                 _G.AmbitiousMobileHideList[item.key] = on
@@ -10419,18 +9797,6 @@ function buildGui()
     pbFrame.Visible = CONFIG.AUTO_STEAL_ENABLED
     pbFrame.ZIndex = 10
 
-    backgroundImagePB = Instance.new("ImageLabel", pbFrame)
-    backgroundImagePB.Name = "BackgroundImagePB"
-    backgroundImagePB.Size = UDim2.new(1, 0, 1, 0)
-    backgroundImagePB.Position = UDim2.new(0, 0, 0, 0)
-    backgroundImagePB.BackgroundTransparency = 1
-    backgroundImagePB.BorderSizePixel = 0
-    backgroundImagePB.Image = ""
-    backgroundImagePB.ScaleType = Enum.ScaleType.Crop
-    backgroundImagePB.ImageTransparency = 1
-    backgroundImagePB.ZIndex = 1
-    Instance.new("UICorner", backgroundImagePB).CornerRadius = UDim.new(0, 14)
-
     pbScale = Instance.new("UIScale", pbFrame)
     pbScale.Scale = progressBarScale
 
@@ -10668,7 +10034,7 @@ function createMobilePanel()
         local startPos = nil
 
         local function onInputBegan(input)
-            if mobileButtonsLocked or uiLocked then return end
+            if mobileButtonsLocked then return end
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                 dragging = true
                 hasMoved = false
@@ -10679,16 +10045,17 @@ function createMobilePanel()
         end
 
         local function onInputChanged(input)
-            if not dragging or mobileButtonsLocked or uiLocked then return end
+            if not dragging or mobileButtonsLocked then return end
             if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
                 local delta = input.Position - dragStart
                 if delta.Magnitude > 7 then hasMoved = true end
                 if hasMoved then
-                    local parentSize = btnContainer.AbsoluteSize
-                    local maxX = math.max(0, parentSize.X - btn.AbsoluteSize.X)
-                    local maxY = math.max(0, parentSize.Y - btn.AbsoluteSize.Y)
-                    local x = math.clamp(startPos.X.Offset + delta.X, 0, maxX)
-                    local y = math.clamp(startPos.Y.Offset + delta.Y, 0, maxY)
+                    -- v1.7.4: auf den Bildschirm clampen (nicht auf die enge Container-Box)
+                    local vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280, 720)
+                    local sc = math.max(containerScale.Scale, 0.01)
+                    local ap = btnContainer.AbsolutePosition
+                    local x = math.clamp(startPos.X.Offset + delta.X / sc, -ap.X / sc, (vp.X - ap.X - btn.AbsoluteSize.X) / sc)
+                    local y = math.clamp(startPos.Y.Offset + delta.Y / sc, -ap.Y / sc, (vp.Y - ap.Y - btn.AbsoluteSize.Y) / sc)
                     btn.Position = UDim2.fromOffset(x, y)
                 end
             end
@@ -11157,6 +10524,10 @@ function updateUIFromLoaded()
     if carrySysSoftStealRadiusBox then carrySysSoftStealRadiusBox.Text = tostring(CarrySystem.softStealRadius) end
     if carrySystemToggleSetter then carrySystemToggleSetter(useCarrySystem) end
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant or 1) end
+    -- v1.7.4: Schalter-Visuals mit geladenem Zustand synchronisieren
+    if ShoxSetLockBtnsVisual then ShoxSetLockBtnsVisual(mobileButtonsLocked) end
+    if ShoxHideMasterVisual then ShoxHideMasterVisual(_G.AmbitiousHideMobileButtons == true) end
+    for _, f in pairs(ShoxHideItemVisuals or {}) do pcall(f) end
     refreshSpeedModeLabel()
 
     if infJumpSetVisual then infJumpSetVisual(infJumpEnabled) end
@@ -11348,7 +10719,7 @@ function updateUIFromLoaded()
             MobilePanel.Enabled = true
             local btnCont = container:FindFirstChild("ButtonsContainer")
             if btnCont then
-                local keyByButton = {TpDown="tp", TPBat="tpBat", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
+                local keyByButton = {InstaReset="instaReset", TpDown="tp", TPBat="tpBat", AutoBat="aimbot", AutoLeft="autoLeft", AutoRight="autoRight", DropBR="drop", Carry="carry", Lagger1="laggerNormal", Lagger2="laggerCarry"}
                 for _, btn in ipairs(btnCont:GetChildren()) do
                     if btn:IsA("TextButton") then
                         local defX, defY = getDefaultButtonPosition(btn.Name)
@@ -11413,7 +10784,8 @@ RunService.Heartbeat:Connect(function()
     -- (Velocity.Y < -25 + State-Filter) hat Auto TP Down praktisch nie ausgeloest.
     if hum.FloorMaterial ~= Enum.Material.Air then return end
     if hum:GetState() == Enum.HumanoidStateType.Seated then return end
-    if root.AssemblyLinearVelocity.Y > 12 then return end
+    -- v1.7.4: nur beim echten Fallen ausloesen (nicht beim Loslassen von Jump am Apex)
+    if root.AssemblyLinearVelocity.Y > -6 then return end
     ShoxHubAutoTPCheckAt = now
     local hit = ShoxGetGroundHit(ch, root)
     if not hit then return end
@@ -11901,10 +11273,6 @@ if LP.Character then
             startAnimPack(currentAnimPack)
         end
         pcall(function() applyOutfitByIndex(currentOutfitIndex) end)
-        if katanaSkinEnabled then
-            task.wait(0.6)
-            pcall(function() KatanaSkin.ApplySkin("KATANA") end)
-        end
         if minecraftBatSkinEnabled then
             task.wait(0.6)
             pcall(function() MinecraftBatSkin.Apply() end)
@@ -11975,10 +11343,6 @@ LP.CharacterAdded:Connect(function(char)
             outfitSelectorLabel.Text = OUTFITS[currentOutfitIndex].label
         end
 
-        if katanaSkinEnabled then
-            task.wait(1)
-            pcall(function() KatanaSkin.ApplySkin("KATANA") end)
-        end
         if minecraftBatSkinEnabled then
             task.wait(0.6)
             pcall(function() MinecraftBatSkin.Apply() end)
