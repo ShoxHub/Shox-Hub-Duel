@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.0"
+ShoxHubState.Version     = "v1.9.1"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -62,7 +62,7 @@ local ShoxHubHttpService = game:GetService("HttpService")
 local ShoxHubPlayer = ShoxHubPlayers.LocalPlayer
 
 -- v1.6.0: Unified font matches CTD intro brand (GothamBlack).
-local SHOX_UI_FONT = Enum.Font.GothamBlack
+local SHOX_UI_FONT = Enum.Font.GothamMedium  -- v1.9.1: Fenster/Balken duenner; Mobile-Buttons behalten GothamBlack
 
 local ShoxIntro = {
     Running = true,
@@ -2666,6 +2666,15 @@ function doTpDown(force)
         local lv = root.AssemblyLinearVelocity
         root.AssemblyLinearVelocity = Vector3.new(lv.X, 0, lv.Z)
         root.AssemblyAngularVelocity = Vector3.zero
+        pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Running) end)
+        -- ein Frame spaeter Tempo erneut sichern, falls ein anderes System es nach dem TP gebremst hat
+        task.defer(function()
+            if root.Parent then
+                local v2 = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = Vector3.new(lv.X, math.min(v2.Y, 0), lv.Z)
+                if _G.ShoxATPDebug then warn(string.format("[ShoxATP] Tempo vorher=%.1f nachher=%.1f", Vector3.new(lv.X,0,lv.Z).Magnitude, Vector3.new(v2.X,0,v2.Z).Magnitude)) end
+            end
+        end)
     end)
     if not ok then shoxWarn("TP_DOWN", "Failed: " .. tostring(err)) end
 end
@@ -3937,7 +3946,7 @@ function setupSpeedIndicator(char)
     speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
     speedLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
     speedLabel.TextStrokeTransparency = 0.08
-    speedLabel.Font = SHOX_UI_FONT
+    speedLabel.Font = Enum.Font.GothamBold
     speedLabel.TextSize = 18
     speedLabel.TextXAlignment = Enum.TextXAlignment.Center
     speedLabel.ZIndex = 10
@@ -4076,6 +4085,9 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     -- silently halved Auto Left/Right speed even when Lagger mode was disabled.
     local normalCap = math.max(tonumber(NS) or 60, 1)
     local speed = math.clamp(tonumber(requestedSpeed) or normalCap, 1, normalCap)
+    if ShoxIsCarrying and ShoxIsCarrying() then
+        speed = math.min(speed, math.max(tonumber(CarrySystem.carrySpeed) or 30, 1))
+    end
     local current = root.AssemblyLinearVelocity
     local desiredX = flat.Unit.X * speed
     local desiredZ = flat.Unit.Z * speed
@@ -4102,6 +4114,47 @@ function ShoxAPReached(key, root, tgt, dt, spd)
     if d < math.max(1, step * 1.25) then ShoxAPDist[key] = nil; return true end
     if last and d > last + 0.05 and last < math.max(3, step * 2) then ShoxAPDist[key] = nil; return true end
     return false
+end
+
+-- v1.9.1: eigene Teile nur in Zielnaehe (<=14 Studs) nicht-kollidierend (Ueberlappung mit dem Gegner = Wegschleudern)
+ShoxNCOrig = setmetatable({}, {__mode = "k"})
+ShoxNCConn = nil
+function ShoxNoCollide(on, getTarget)
+    if ShoxNCConn then ShoxNCConn:Disconnect(); ShoxNCConn = nil end
+    for p in pairs(ShoxNCOrig) do
+        if p.Parent then pcall(function() p.CanCollide = true end) end
+        ShoxNCOrig[p] = nil
+    end
+    if not on then return end
+    local list, listT, off = {}, 0, true
+    ShoxNCConn = RunService.Stepped:Connect(function()
+        local ch = LP.Character
+        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+        local tr = getTarget and getTarget()
+        local near = tr and tr.Parent and (tr.Position - hrp.Position).Magnitude <= 14
+        local now = os.clock()
+        if near then
+            if now - listT > 1 then
+                listT = now
+                list = {}
+                for _, d in ipairs(ch:GetDescendants()) do
+                    if d:IsA("BasePart") then list[#list + 1] = d end
+                end
+            end
+            for i = 1, #list do
+                local p = list[i]
+                if p.Parent and p.CanCollide then ShoxNCOrig[p] = true; p.CanCollide = false end
+            end
+            off = false
+        elseif not off then
+            for p in pairs(ShoxNCOrig) do
+                if p.Parent then pcall(function() p.CanCollide = true end) end
+                ShoxNCOrig[p] = nil
+            end
+            off = true
+        end
+    end)
 end
 
 -- v1.9.0: FULL-Modus. Nach L2/R2 zurueck ueber den Ausgang (L1/R1) und die Gasse zur Gegenseite,
@@ -4175,8 +4228,8 @@ function ShoxAPFullReturn(side)
             mv = (mv * 0.4 + perp).Unit
         end
         hum:Move(mv, false)
-        -- waehrend des Steal-Holds langsamer (Prompt-Radius), danach volles Tempo
-        applyAutoPathVelocity(root, mv, isStealing and spd * 0.4 or spd, dt)
+        -- v1.9.1: kein Slow mehr beim Steal; mit Brainrot greift der Carry-Cap in applyAutoPathVelocity
+        applyAutoPathVelocity(root, mv, spd, dt)
     end)
     if isL then alConn = conn else arConn = conn end
 end
@@ -4467,6 +4520,7 @@ function stopAimbotAdapt()
     _prevAutoRotate = nil
     lastMoveDir = _V3zero
     _unsuppressBodyLock(true)
+    if ShoxNoCollide then ShoxNoCollide(false) end
 end
 
 ShoxAimbotTarget = nil
@@ -4515,6 +4569,7 @@ function startAimbotAdapt()
     ShoxAimbotTarget = nil
     ShoxAimbotLastPos = nil
     ShoxAimbotVel = _V3zero
+    ShoxNoCollide(true, function() return ShoxAimbotTarget end)
     _aimbotConn = RunService.RenderStepped:Connect(function(dt)
         if not autoBatEnabled then return end
         if _tick() < _globalMovementLock then return end
@@ -4862,6 +4917,7 @@ function startAlvaroTP()
 
     batDesyncTpConn  = RunService.Heartbeat:Connect(tpBatUpdate)
     _G.AlvaroTP.conn = batDesyncTpConn
+    ShoxNoCollide(true, function() return ShoxTPBatTarget end)
 
     -- No client-side health manipulation or unsupported lag payload is started.
     tpBatStartLagger()
@@ -4879,6 +4935,7 @@ function stopAlvaroTP()
         batDesyncTpConn = nil
     end
     _G.AlvaroTP.conn            = nil
+    if ShoxNoCollide then ShoxNoCollide(false) end
     _G.AlvaroTP.hittingCooldown = false
     _tpBatHitCooldown           = false
 
@@ -7618,7 +7675,7 @@ function buildGui()
     local BG = Color3.fromRGB(0,0,0)
     local BG2 = Color3.fromRGB(10,10,10)
     local ROW_BG = Color3.fromRGB(10,10,10)
-    local ROW_BORDER = Color3.fromRGB(50,50,50)
+    local ROW_BORDER = Color3.fromRGB(71,71,71)
     local WHITE = Color3.fromRGB(255,255,255)
     local GRAY = Color3.fromRGB(60,60,60)
     local INP = Color3.fromRGB(15,15,15)
@@ -7654,11 +7711,20 @@ function buildGui()
     main.BorderSizePixel = 0
     main.ClipsDescendants = true
     Instance.new("UICorner", main).CornerRadius = UDim.new(0, 18)
+    do -- v1.9.1: Verlauf wie die Mobile-Buttons
+        local mg = Instance.new("UIGradient", main)
+        mg.Rotation = 90
+        mg.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(26, 26, 26)),
+            ColorSequenceKeypoint.new(0.45, Color3.fromRGB(12, 12, 12)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(4, 4, 4)),
+        })
+    end
     do -- v1.7.2: dezenter Fensterrahmen (neutral)
         local mainStroke = Instance.new("UIStroke", main)
-        mainStroke.Color = Color3.fromRGB(55, 55, 55)
+        mainStroke.Color = Color3.fromRGB(71, 71, 71)
         mainStroke.Thickness = 1.2
-        mainStroke.Transparency = 0.2
+        mainStroke.Transparency = 0.35
     end
 
     mainUIScale = Instance.new("UIScale", main)
@@ -7678,11 +7744,11 @@ function buildGui()
     titleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     titleImage.BackgroundTransparency = 1
     titleImage.Text = "SHOX"
-    titleImage.TextColor3 = Color3.fromRGB(246, 246, 246)
+    titleImage.TextColor3 = Color3.fromRGB(225, 225, 225)
     titleImage.Font = SHOX_UI_FONT
     titleImage.TextScaled = true
     titleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    titleImage.TextStrokeTransparency = 0.12
+    titleImage.TextStrokeTransparency = 1
     titleImage.ZIndex = 21
     local titleConstraint = Instance.new("UITextSizeConstraint", titleImage)
     titleConstraint.MaxTextSize = 54
@@ -7731,11 +7797,11 @@ function buildGui()
     miniTitleImage.Position = UDim2.new(0.5, 0, 0.5, 0)
     miniTitleImage.BackgroundTransparency = 1
     miniTitleImage.Text = "SHOX"
-    miniTitleImage.TextColor3 = Color3.fromRGB(246, 246, 246)
+    miniTitleImage.TextColor3 = Color3.fromRGB(225, 225, 225)
     miniTitleImage.Font = SHOX_UI_FONT
     miniTitleImage.TextScaled = true
     miniTitleImage.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-    miniTitleImage.TextStrokeTransparency = 0.12
+    miniTitleImage.TextStrokeTransparency = 1
     miniTitleImage.ZIndex = 21
     local miniTitleConstraint = Instance.new("UITextSizeConstraint", miniTitleImage)
     miniTitleConstraint.MaxTextSize = 28
@@ -7928,9 +7994,9 @@ function buildGui()
         l.Position = UDim2.new(0, 8, 0, 0)
         l.BackgroundTransparency = 1
         l.Text = txt:upper()
-        l.TextColor3 = Color3.fromRGB(231, 231, 231)
-        l.Font = SHOX_UI_FONT
-        l.TextSize = 15
+        l.TextColor3 = Color3.fromRGB(200, 200, 200)
+        l.Font = Enum.Font.GothamBold
+        l.TextSize = 13
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextStrokeColor3 = Color3.fromRGB(60,60,60)
         l.TextStrokeTransparency = 1
@@ -7949,11 +8015,11 @@ function buildGui()
         local f = Instance.new("Frame", page)
         f.Size = UDim2.new(1, -4, 0, h or 38)
         f.BackgroundColor3 = ROW_BG
-        f.BackgroundTransparency = 0.7
+        f.BackgroundTransparency = 0.5
         f.BorderSizePixel = 0
         f.LayoutOrder = getNextOrder(page)
         f.ZIndex = 7
-        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 12)
         local rowStroke = Instance.new("UIStroke", f)
         rowStroke.Color = ROW_BORDER
         rowStroke.Thickness = 1
@@ -7973,9 +8039,9 @@ function buildGui()
         l.Position = UDim2.new(0, 10, 0, 0)
         l.BackgroundTransparency = 1
         l.Text = txt
-        l.TextColor3 = Color3.fromRGB(236, 236, 236)
+        l.TextColor3 = Color3.fromRGB(205, 205, 205)
         l.Font = SHOX_UI_FONT
-        l.TextSize = 11
+        l.TextSize = 12
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextTruncate = Enum.TextTruncate.AtEnd
         l.TextStrokeColor3 = Color3.fromRGB(0,0,0)
@@ -9437,8 +9503,8 @@ function buildGui()
     pbFrame = Instance.new("Frame", gui)
     pbFrame.Size = UDim2.new(0, 236, 0, 46)
     pbFrame.Position = UDim2.new(0.5, -118, 0, 56)
-    pbFrame.BackgroundColor3 = Color3.fromRGB(13, 13, 13)
-    pbFrame.BackgroundTransparency = 0.08
+    pbFrame.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+    pbFrame.BackgroundTransparency = 0
     pbFrame.BorderSizePixel = 0
     pbFrame.Active = true
     pbFrame.Selectable = false
@@ -9459,12 +9525,22 @@ function buildGui()
     end
 
     local corner = Instance.new("UICorner", pbFrame)
-    corner.CornerRadius = UDim.new(0, 12)
+    corner.CornerRadius = UDim.new(0, 14)
+    do -- v1.9.1: gleicher Stil wie die Mobile-Buttons
+        local pg = Instance.new("UIGradient", pbFrame)
+        pg.Rotation = 90
+        pg.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
+            ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
+            ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
+            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
+        })
+    end
     local pbStroke = Instance.new("UIStroke", pbFrame)
     pbStroke.Name = "PBStroke"
-    pbStroke.Color = getThemeColor()
-    pbStroke.Thickness = 1.4
-    pbStroke.Transparency = 0.35
+    pbStroke.Color = Color3.fromRGB(71, 71, 71)
+    pbStroke.Thickness = 1
+    pbStroke.Transparency = 0.45
 
     fpsNeon = Instance.new("TextLabel", pbFrame)
     fpsNeon.Name = "FPSNeon"
@@ -9472,7 +9548,7 @@ function buildGui()
     fpsNeon.Position = UDim2.new(0, 12, 0, 4)
     fpsNeon.BackgroundTransparency = 1
     fpsNeon.Text = "--FPS · --ms"
-    fpsNeon.TextColor3 = Color3.fromRGB(211, 211, 211)
+    fpsNeon.TextColor3 = Color3.fromRGB(170, 170, 170)
     fpsNeon.Font = SHOX_UI_FONT
     fpsNeon.TextSize = 10
     fpsNeon.TextXAlignment = Enum.TextXAlignment.Left
@@ -9499,16 +9575,15 @@ function buildGui()
     progressFill = Instance.new("Frame", fillRegion)
     progressFill.Size = UDim2.new(0, 0, 1, 0)
     progressFill.Position = UDim2.new(0, 0, 0, 0)
-    progressFill.BackgroundColor3 = Color3.fromRGB(211, 211, 211)
+    progressFill.BackgroundColor3 = getThemeColor()
     progressFill.BorderSizePixel = 0
     progressFill.ZIndex = 13
     Instance.new("UICorner", progressFill).CornerRadius = UDim.new(0, 7)
 
     local fillGrad = Instance.new("UIGradient", progressFill)
     fillGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(151, 151, 151)),
-        ColorSequenceKeypoint.new(0.50, Color3.fromRGB(211, 211, 211)),
-        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(231, 231, 231)),
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(190, 190, 190)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 255, 255)),
     })
     fillGrad.Rotation = 0
 
@@ -9517,11 +9592,11 @@ function buildGui()
     progressPct.Position = UDim2.new(0, 0, 0, 0)
     progressPct.BackgroundTransparency = 1
     progressPct.Text = "0%"
-    progressPct.TextColor3 = Color3.fromRGB(255,255,255)
+    progressPct.TextColor3 = Color3.fromRGB(235,235,235)
     progressPct.Font = SHOX_UI_FONT
     progressPct.TextSize = 10
     progressPct.TextStrokeColor3 = Color3.fromRGB(0,0,0)
-    progressPct.TextStrokeTransparency = 0.3
+    progressPct.TextStrokeTransparency = 0.6
     progressPct.ZIndex = 16
 
     drag(pbFrame)
@@ -9663,7 +9738,7 @@ function createMobilePanel()
         label.BackgroundTransparency = 1
         label.Text = text
         label.TextColor3 = Color3.fromRGB(255, 255, 255)
-        label.Font = SHOX_UI_FONT
+        label.Font = Enum.Font.GothamBlack
         label.TextSize = 11
         label.TextWrapped = true
         label.ZIndex = 11
@@ -9962,7 +10037,7 @@ function createInstaResetFloatingButton()
     label.BackgroundTransparency = 1
     label.Text = "INSTA\nRESET"
     label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.Font = SHOX_UI_FONT
+    label.Font = Enum.Font.GothamBlack
     label.TextSize = 11
     label.TextWrapped = true
     label.ZIndex = 21
