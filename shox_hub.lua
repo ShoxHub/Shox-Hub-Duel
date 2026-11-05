@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.4-hotfix1"
+ShoxHubState.Version     = "v1.9.5"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -462,7 +462,7 @@ local function shoxWarn(key, msg, interval)
     local now = os.clock()
     if _shoxWarnLast[key] and now - _shoxWarnLast[key] < interval then return end
     _shoxWarnLast[key] = now
-    warn("[ShoxHub v1.6.0][" .. tostring(key) .. "] " .. tostring(msg))
+    warn("[ShoxHub][" .. tostring(key) .. "] " .. tostring(msg))
 end
 
 local _tick          = tick
@@ -2296,6 +2296,7 @@ end
 
 local function executeSteal(prompt, podName)
     if isStealing then return end
+    if os.clock() < (ShoxStealBlockUntil or 0) then return end -- v1.9.5: kurze Sperre nach sauberem Abbruch (kein paralleler Steal)
     if type(Steal.Data) == "table" then
         pcall(function()
             local mt = getmetatable(Steal.Data) or {}
@@ -2668,15 +2669,25 @@ end
 -- ShoxTPDownGroundY = Y der HumanoidRootPart am Boden (S2 nutzt -7.00). Im Spiel pruefen: _G.ShoxATPDebug = true
 ShoxTPDownGroundY = -7.00
 
--- v1.9.3: TP Down exakt wie Clean Hub: CFrame auf Y=-7 (gleiche Yaw), Velocity 0. Fast-Fall entfernt.
+-- v1.9.5: TP Down behaelt das horizontale Tempo (nur Y-Velocity auf 0). Ziel-Y kommt aus dem Boden-Raycast,
+-- Y=-7 nur als Fallback wenn kein Boden gefunden wird. Nur wenn wirklich Hoehe ueber dem Boden da ist.
 function doTpDown()
     pcall(function()
         local char = LP.Character
         if not char then return end
         local root = char:FindFirstChild("HumanoidRootPart")
         if not root then return end
-        root.CFrame = _CFnew(root.Position.X, -7, root.Position.Z) * CFrame.Angles(0, select(2, root.CFrame:ToEulerAnglesYXZ()), 0)
-        root.AssemblyLinearVelocity = _V3zero
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local targetY = ShoxTPDownGroundY
+        local hit = ShoxGetGroundHit(char, root)
+        if hit then
+            local off = hum and ShoxGetStandOffset(hum, root) or 3
+            targetY = hit.Position.Y + off
+            if root.Position.Y - targetY < 1.5 then return end -- schon am Boden
+        end
+        local lv = root.AssemblyLinearVelocity
+        root.CFrame = _CFnew(root.Position.X, targetY, root.Position.Z) * CFrame.Angles(0, select(2, root.CFrame:ToEulerAnglesYXZ()), 0)
+        root.AssemblyLinearVelocity = _V3new(lv.X, 0, lv.Z)
     end)
 end
 
@@ -2815,6 +2826,7 @@ function _G.AmbitiousSafeModeIsCarryableTool(tool)
 end
 
 function _G.AmbitiousSafeModeHoldingBrainrot()
+    -- v1.9.5: gleiche Regeln wie ShoxHubIsCarrying: nur Attribut "Stealing" und explizite Marker, kein Namens-Match
     local ok, val = pcall(function() return LP:GetAttribute("Stealing") end)
     if ok and val == true then return true end
     local char = LP.Character
@@ -2822,28 +2834,11 @@ function _G.AmbitiousSafeModeHoldingBrainrot()
     local ok3, val3 = pcall(function() return char:GetAttribute("Stealing") end)
     if ok3 and val3 == true then return true end
     for _, name in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
-        local v = char:FindFirstChild(name, true)
+        local v = char:FindFirstChild(name)
         if v then
-            if v:IsA("BoolValue")   and v.Value then return true end
-            if v:IsA("ObjectValue") and v.Value then return true end
-            if v:IsA("StringValue") then
-                local state = v.Value:lower()
-                if state == "true" or state == "1" or state == "carrying"
-                   or state == "holding" or state == "stealing" then return true end
-            end
-        end
-    end
-    -- Do not infer carrying from arbitrary model names such as "AnimalSlot"
-    -- or "AnimalPodium"; only trust an explicit carried-state attribute.
-    for _, child in ipairs(char:GetChildren()) do
-        if child:IsA("Model") and child:GetAttribute("IsCarried") == true then
-            return true
-        end
-        local name = child.Name:lower()
-        if name:find("brainrot", 1, true) or name:find("animal", 1, true) then
-            if child:FindFirstChildWhichIsA("BasePart") then
-                return true
-            end
+            if v:IsA("BoolValue") and v.Value == true then return true end
+            if v:IsA("ObjectValue") and v.Value ~= nil then return true end
+            if v:IsA("StringValue") and v.Value ~= "" then return true end
         end
     end
     return false
@@ -2859,13 +2854,15 @@ function _G.AmbitiousSafeModeForceStop(reason)
     local stopped = false
     if autoBatEnabled and disableAutoBat then disableAutoBat(); stopped = true end
     if batDesyncTpEnabled and stopBatDesyncTp then stopBatDesyncTp(); stopped = true end
-    if autoLeftEnabled then
+    -- v1.9.5: Safe Mode soll nur Kicks verhindern. Auto L/R Full (Hin- und Rueckweg mit Brainrot) nicht abbrechen.
+    local keepAP = (reason == "SAFE MODE LOCK") and (ShoxAutoFull == true or ShoxAPFullActive == true)
+    if autoLeftEnabled and not keepAP then
         autoLeftEnabled = false
         if autoLeftSetVisual then autoLeftSetVisual(false) end
         stopAutoLeft()
         stopped = true
     end
-    if autoRightEnabled then
+    if autoRightEnabled and not keepAP then
         autoRightEnabled = false
         if autoRightSetVisual then autoRightSetVisual(false) end
         stopAutoRight()
@@ -4199,14 +4196,25 @@ function ShoxAPFullReturn(side)
         end
     end
     conn = RunService.Heartbeat:Connect(function(dt)
-        if not (isL and autoLeftEnabled or (not isL) and autoRightEnabled) then return end
+        if not (isL and autoLeftEnabled or (not isL) and autoRightEnabled) then
+            -- v1.9.5: Toggle aus -> Verbindung trennen statt jeden Frame nur zu returnen
+            ShoxAPFullActive = false
+            if tmpSteal then tmpSteal = false; pcall(stopAutoSteal) end
+            if conn then conn:Disconnect() end
+            if isL then if alConn == conn then alConn = nil end else if arConn == conn then arConn = nil end end
+            return
+        end
         local now = os.clock()
         local char = LP.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
-        -- v1.9.4-fix: Wenn Steal nach 5s noch haengt, abbrechen damit Pfad weiterlaeuft
-        if isStealing and now - startedAt > 5 then isStealing = false end
+        -- v1.9.5: Haengt der Steal nach 5s noch, sauber abbrechen: Worker beendet sich selbst (setzt data.ready),
+        -- ein neuer Steal wird kurz gesperrt, damit nie zwei Steals parallel laufen.
+        if isStealing and now - startedAt > 5 then
+            ShoxStealBlockUntil = now + 0.15
+            isStealing = false
+        end
         local spd = math.min(math.max(0, tonumber(NS) or 0), ShoxAPReturnCap())
         local lastP = list[#list]
         local tgtP = list[idx]
@@ -4263,7 +4271,7 @@ function ShoxAPFullReturn(side)
             mv = (mv * 0.4 + perp).Unit
         end
         hum:Move(mv, false)
-        applyAutoPathVelocity(root, mv, useSpd, dt)
+        root.AssemblyLinearVelocity = _V3new(mv.X * useSpd, root.AssemblyLinearVelocity.Y, mv.Z * useSpd)
     end)
     if isL then alConn = conn else arConn = conn end
 end
@@ -4336,14 +4344,14 @@ function startAutoLeft()
                 local mv = _V3new(d.X, 0, d.Z)
                 if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
                 hum:Move(mv, false)
-                applyAutoPathVelocity(root, mv, spd, dt)
+                root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
                 return
             end
             local d = AP.L1 - root.Position
             local mv = _V3new(d.X, 0, d.Z)
             if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            applyAutoPathVelocity(root, mv, spd, dt)
+            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
         elseif alPhase == 2 then
             local tgt = _V3new(AP.L2.X, root.Position.Y, AP.L2.Z)
             if ShoxAPReached("L2", root, tgt, dt, spd) then
@@ -4372,7 +4380,7 @@ function startAutoLeft()
             local mv = _V3new(d.X, 0, d.Z)
             if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            applyAutoPathVelocity(root, mv, spd, dt)
+            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
         end
     end)
 end
@@ -4445,14 +4453,14 @@ function startAutoRight()
                 local mv = _V3new(d.X, 0, d.Z)
                 if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
                 hum:Move(mv, false)
-                applyAutoPathVelocity(root, mv, spd, dt)
+                root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
                 return
             end
             local d = AP.R1 - root.Position
             local mv = _V3new(d.X, 0, d.Z)
             if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            applyAutoPathVelocity(root, mv, spd, dt)
+            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
         elseif arPhase == 2 then
             local tgt = _V3new(AP.R2.X, root.Position.Y, AP.R2.Z)
             if ShoxAPReached("R2", root, tgt, dt, spd) then
@@ -4481,7 +4489,7 @@ function startAutoRight()
             local mv = _V3new(d.X, 0, d.Z)
             if mv.Magnitude > 0.001 then mv = mv.Unit else mv = _V3zero end
             hum:Move(mv, false)
-            applyAutoPathVelocity(root, mv, spd, dt)
+            root.AssemblyLinearVelocity = _V3new(mv.X * spd, root.AssemblyLinearVelocity.Y, mv.Z * spd)
         end
     end)
 end
@@ -4622,31 +4630,17 @@ function ShoxBatStep(dt)
         end
     end
 
-    -- v1.9.4-hotfix1: Target-Hysterese. Vorher wurde alle 0.03s der NAECHSTE Player gewaehlt
-    -- -> bei 2+ Gegnern Pendeln. Jetzt: einmal gelockt, bleiben bis tot oder out-of-range.
-    local target = Z.target
-    if target then
-        local tchar0 = target.Parent
-        local thum0 = tchar0 and tchar0:FindFirstChildOfClass("Humanoid")
-        if not tchar0 or not thum0 or thum0.Health <= 0
-           or (target.Position - root.Position).Magnitude > 40 then
-            target = nil
-        end
-    end
-    if not target then
-        local fresh = getClosestTarget()
-        if fresh ~= Z.target then
-            ShoxBatResetTarget()
-            Z = ShoxBatZ
-            Z.target = fresh
-        end
-        target = fresh
-    end
+    local target = getClosestTarget()
     local tchar = target and target.Parent
     local thum = tchar and tchar:FindFirstChildOfClass("Humanoid")
     if not target or not thum or thum.Health <= 0 then
         ShoxBatResetTarget()
         return
+    end
+    if Z.target ~= target then
+        ShoxBatResetTarget()
+        Z = ShoxBatZ
+        Z.target = target
     end
 
     local targetPos = target.Position
@@ -4728,32 +4722,26 @@ function ShoxBatStep(dt)
     -- Verfolgen (im Lagger-Modus langsamer, wie Clean Hub)
     local speed = tonumber(BAT_AIMBOT_SPEED) or 60
     if CarrySystem and CarrySystem.laggerMode ~= 0 then speed = math.min(speed, ShoxBatLaggerSpeed) end
-    -- v1.9.4-fix: Dead-Zone anhand ECHTER Distanz (nicht Vorhalt), verhindert Pendeln am Ziel
-    local realDist = (targetPos - root.Position).Magnitude
-    if realDist <= C.MIN_FOLLOW_DISTANCE + 0.5 then
-        root.AssemblyLinearVelocity = _V3new(0, root.AssemblyLinearVelocity.Y, 0)
+    -- v1.9.4-hotfix2: 1:1 wie Clean Hub (Dead-Zone auf Vorhalt-Punkt, voller Speed)
+    if toTarget.Magnitude > C.MIN_FOLLOW_DISTANCE then
+        root.AssemblyLinearVelocity = toTarget.Unit * speed
     else
-        local mv = toTarget
-        if mv.Magnitude < 0.01 then mv = targetPos - root.Position end
-        if mv.Magnitude > 0.01 then
-            local proxScale = math.clamp(realDist / (C.MIN_FOLLOW_DISTANCE * 8), 0.4, 1)
-            root.AssemblyLinearVelocity = mv.Unit * (speed * proxScale)
-        end
+        root.AssemblyLinearVelocity = _V3new(0, root.AssemblyLinearVelocity.Y * 0.5, 0)
     end
 end
 
 function startAimbotAdapt()
     if _aimbotConn then return end
     _suppressBodyLock()
-    ShoxBatResetTarget()
     local hum0 = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
     if hum0 then
         if _prevAutoRotate == nil then _prevAutoRotate = hum0.AutoRotate end
         hum0.AutoRotate = false
     end
+    -- v1.9.5: alte Schleife (Zielhoehe +3.7, yVel>=13, Lerp 0.8 = Schleudern) entfernt; nur noch ShoxBatStep.
+    ShoxBatResetTarget()
     _aimbotConn = RunService.RenderStepped:Connect(function(dt)
-        local ok, err = pcall(ShoxBatStep, dt)
-        if not ok then shoxWarn("BatAimbot", err, 5) end
+        ShoxBatStep(dt)
     end)
 end
 
@@ -4813,6 +4801,23 @@ _G.AlvaroTP = _G.AlvaroTP or {
 local _tpBatHitCooldown = false
 local _tpBatMaxRange    = 100
 
+-- v1.9.5: gecachte Liste der Charakter-Teile (statt GetDescendants pro Frame). Neu aufgebaut bei Charakterwechsel / alle 3s.
+ShoxTPBatPartsChar, ShoxTPBatPartsList, ShoxTPBatPartsAt = nil, {}, 0
+function ShoxTPBatSetNoCollide(char)
+    if not char then return end
+    local now = os.clock()
+    if ShoxTPBatPartsChar ~= char or now - ShoxTPBatPartsAt > 3 then
+        ShoxTPBatPartsChar, ShoxTPBatPartsAt = char, now
+        ShoxTPBatPartsList = {}
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then ShoxTPBatPartsList[#ShoxTPBatPartsList + 1] = part end
+        end
+    end
+    for _, part in ipairs(ShoxTPBatPartsList) do
+        if part.Parent and part.CanCollide then part.CanCollide = false end
+    end
+end
+
 -- ANTI-DIE (aus dem Clean Hub; der Lagger-Teil ist bewusst NICHT uebernommen)
 local _tpBatAntiDieThread = nil
 
@@ -4842,13 +4847,9 @@ local function tpBatStartAntiDie()
                 if root and sethiddenproperty then
                     pcall(sethiddenproperty, root, "PhysicsRepRootPart", nil)
                 end
-                if char then
-                    for _, p in ipairs(char:GetDescendants()) do
-                        if p:IsA("BasePart") then p.CanCollide = false end
-                    end
-                end
+                ShoxTPBatSetNoCollide(char)
             end)
-            task.wait(0.05)
+            task.wait(0.1)
         end
         _tpBatAntiDieThread = nil
     end)
@@ -4916,29 +4917,32 @@ local function tpBatClosestPlayer(root)
     return closest, distance
 end
 
--- NETWORK OWNER TELEPORT
+-- TELEPORT (v1.9.5: SetNetworkOwner + task.wait() entfernt, wirkt vom Client nicht und erzeugte ueberlappende Threads)
 local function tpBatNetworkOwnerTeleport(root, targetRoot)
-    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(nil) end end)
-    task.wait()
     local targetPosition = targetRoot.Position + _V3new(0, 0.9, 0)
     root.CFrame = _CFnew(targetPosition)
     root.AssemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
-    pcall(function() if root.SetNetworkOwner then root:SetNetworkOwner(LP) end end)
 end
 
 -- UPDATE LOOP
+ShoxTPBatLastTP, ShoxTPBatLastAnim = 0, 0
 local function tpBatUpdate()
     if not batDesyncTpEnabled then return end
     local character = LP.Character
     local root      = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid  = character and character:FindFirstChildOfClass("Humanoid")
     if not root or not humanoid then return end
+    local now = os.clock()
 
-    local animator = humanoid:FindFirstChildOfClass("Animator")
-    if animator then
-        pcall(function()
-            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do track:Stop() end
-        end)
+    -- Animationen nur alle 0.5s stoppen (vorher jeden Frame)
+    if now - ShoxTPBatLastAnim >= 0.5 then
+        ShoxTPBatLastAnim = now
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if animator then
+            pcall(function()
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do track:Stop() end
+            end)
+        end
     end
 
     local bat = tpBatGetBat()
@@ -4951,21 +4955,19 @@ local function tpBatUpdate()
     local targetRoot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
     if not targetRoot then return end
 
-    tpBatNetworkOwnerTeleport(root, targetRoot)
+    -- Teleport gedrosselt (max ~30x pro Sekunde), Tempo des Gegners wird uebernommen
+    if now - ShoxTPBatLastTP >= 0.033 then
+        ShoxTPBatLastTP = now
+        tpBatNetworkOwnerTeleport(root, targetRoot)
+    end
 
     local camera = workspace.CurrentCamera
     if camera then
         camera.CFrame = _CFnew(camera.CFrame.Position, targetRoot.Position)
     end
-    -- v1.9.4-hotfix1: Server braucht 1-2 Frames um die neue Position zu bestaetigen.
-    -- Hit vorher -> Schlag landet am alten Spot -> "geht ins Leere".
-    task.delay(0.03, tpBatHit)
+    tpBatHit()
 
-    pcall(function()
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then part.CanCollide = false end
-        end
-    end)
+    ShoxTPBatSetNoCollide(character)
 end
 
 function startAlvaroTP()
@@ -5413,10 +5415,18 @@ function runDropBrainrot()
                 local c = LP.Character
                 local r = c and c:FindFirstChild("HumanoidRootPart")
                 if not r then break end
-                -- v1.9.4-hotfix1: Echter Impuls. Vorher wurde die Boost-Velocity 1 Frame spaeter
-                -- auf ~0 zurueckgesetzt -> effektiv nur ~20 Y = nichts passierte. Jetzt 150 Y
-                -- pro Heartbeat-Frame (15 Frames in 0.25s = echter Drop-Impuls).
-                r.AssemblyLinearVelocity = _V3new(0, 150, 0)
+                local vel = r.AssemblyLinearVelocity
+                vel = _V3new(0, vel.Y, 0)
+                -- The former 10,000-stud/s impulse caused severe server correction/lagback.
+                r.AssemblyLinearVelocity = _V3new(
+                    vel.X,
+                    math.clamp(vel.Y + 60, -60, 60),
+                    vel.Z
+                )
+                RunService.RenderStepped:Wait()
+                if r and r.Parent then r.AssemblyLinearVelocity = vel end
+                RunService.Stepped:Wait()
+                if r and r.Parent then r.AssemblyLinearVelocity = vel + _V3new(0, 0.1, 0) end
             end
             if ShoxDropToken == dropToken then finishDrop(flingThread) end
         end)
@@ -7164,7 +7174,7 @@ function loadAllSettings()
 
     _isLoading = false
     if not loadOk then
-        warn("[ShoxHub v1.6.0] loadAllSettings partial failure: " .. tostring(loadErr))
+        warn("[ShoxHub] loadAllSettings partial failure: " .. tostring(loadErr))
         return false
     end
     return true
@@ -10436,22 +10446,67 @@ ShoxHubAutoTPLastAt = 0
 ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
 
--- v1.9.4: Auto TP Down nur beim Fallen (Air + Y>=Hoehe + Fall-Velocity), pausiert bei Drop/Aimbot/TP Bat/Auto L-R
+-- v1.9.4-hotfix3: Exact Clean Hub match, no locks
 RunService.Heartbeat:Connect(function()
     if not ShoxHubAutoTPDown then return end
-    -- v1.9.4: Sperren zurueck. Waehrend Aimbot/TP Bat/Drop/Auto L-R schreibt ein anderes System die Position.
-    if dropActive == true or autoBatEnabled == true or batDesyncTpEnabled == true
-       or autoLeftEnabled == true or autoRightEnabled == true
-       or (_G.InstaResetBusy == true) then return end
     local ch = LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if root and hum and hum.Health > 0 and hum.FloorMaterial == Enum.Material.Air
+    if root and hum and hum.FloorMaterial == Enum.Material.Air
        and root.Position.Y >= ShoxHubAutoTPDownHeight
-       and root.AssemblyLinearVelocity.Y < -2
        and tick() - ShoxHubAutoTPLastAt >= 0.35 then
         ShoxHubAutoTPLastAt = tick()
         doTpDown()
+    end
+end)
+
+-- v1.9.5: Auto L/R Anti-Wall neu. Loest nur aus, wenn ich aktiv laufe (Tempo > 20, Bodenkontakt, kein Steal,
+-- kein Carry-Latch) und trotzdem ueber 0.6s weniger als 3 Studs vorankomme. Dann 0.4s CanCollide aus (Teile gecacht).
+ShoxAPWallWatch = ShoxAPWallWatch or nil
+ShoxAPWallParts = nil
+RunService.Heartbeat:Connect(function()
+    if not (autoLeftEnabled or autoRightEnabled) then
+        ShoxAPWallWatch = nil
+        return
+    end
+    local wch = LP.Character
+    local wroot = wch and wch:FindFirstChild("HumanoidRootPart")
+    local whum = wch and wch:FindFirstChildOfClass("Humanoid")
+    if not wroot or not whum then ShoxAPWallWatch = nil; return end
+    local wnow = os.clock()
+    local wpos = wroot.Position
+    local wv = wroot.AssemblyLinearVelocity
+    local walking = whum.FloorMaterial ~= Enum.Material.Air
+        and _V3new(wv.X, 0, wv.Z).Magnitude > 20
+        and not isStealing
+        and not (ShoxCarryLatched and ShoxCarryLatched())
+    if not walking then
+        ShoxAPWallWatch = nil
+        return
+    end
+    if not ShoxAPWallWatch then
+        ShoxAPWallWatch = { pos = wpos, t = wnow }
+        return
+    end
+    if wnow - ShoxAPWallWatch.t >= 0.6 then
+        local wmoved = _V3new(wpos.X - ShoxAPWallWatch.pos.X, 0, wpos.Z - ShoxAPWallWatch.pos.Z).Magnitude
+        if wmoved < 3 and not ShoxAPWallParts then
+            local wparts = {}
+            for _, wp in ipairs(wch:GetChildren()) do
+                if wp:IsA("BasePart") and wp.CanCollide then
+                    wparts[#wparts + 1] = wp
+                    wp.CanCollide = false
+                end
+            end
+            ShoxAPWallParts = wparts
+            task.delay(0.4, function()
+                for _, wp in ipairs(wparts) do
+                    if wp and wp.Parent then wp.CanCollide = true end
+                end
+                ShoxAPWallParts = nil
+            end)
+        end
+        ShoxAPWallWatch = { pos = wpos, t = wnow }
     end
 end)
 
@@ -11097,7 +11152,35 @@ end)
 
 
 -- ═══════════════════════════════════════════════════════════════
--- ShoxHub v1.6.0 — Global Destroy (Architecture Master)
+-- ShoxHub — Global Destroy
 -- ═══════════════════════════════════════════════════════════════
+-- v1.9.4-hotfix3: SELF-DIAGNOSTICS
+task.spawn(function()
+    local diag = { network = false, compiler = false, details = {} }
+    local okC, errC = pcall(function()
+        if type(loadstring) ~= "function" then error("loadstring() fehlt") end
+        local chunk, perr = loadstring("return 1 + 1")
+        if type(chunk) ~= "function" then error("loadstring kompilierte nicht: " .. tostring(perr)) end
+        if chunk() ~= 2 then error("loadstring lieferte falsches Ergebnis") end
+        return true
+    end)
+    diag.compiler = okC
+    if not okC then diag.details.compiler = tostring(errC) end
+    -- v1.9.5: kein Netzwerkcall mehr (jsdelivr entfernt). Es wird nur geprueft, ob HttpGet existiert.
+    local okN, errN = pcall(function()
+        if type(game.HttpGet) ~= "function" then error("game:HttpGet() fehlt") end
+        return true
+    end)
+    diag.network = okN
+    if not okN then diag.details.network = tostring(errN) end
+    ShoxHubState.Diagnostics = diag
+    _G.ShoxHub.Diagnostics = diag
+    print(("[ShoxHub %s] Netzwerk: %s | Lua-Compiler: %s"):format(
+        tostring(ShoxHubState.Version),
+        diag.network  and "OK" or ("FEHLER (" .. tostring(diag.details.network)  .. ")"),
+        diag.compiler and "OK" or ("FEHLER (" .. tostring(diag.details.compiler) .. ")")
+    ))
+end)
+
 _G.ShoxHubDestroy = function() ShoxHubState:Destroy() end
-print("[ShoxHub v1.6.0] Loaded. Absolute Master Architecture Active. Version: " .. tostring(ShoxHubState.Version))
+print("[ShoxHub] Loaded. Version: " .. tostring(ShoxHubState.Version))
