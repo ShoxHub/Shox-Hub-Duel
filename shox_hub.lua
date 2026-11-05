@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.3"
+ShoxHubState.Version     = "v1.9.4-hotfix1"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -27,6 +27,8 @@ end
 
 function ShoxHubState:Destroy()
     self.Running = false
+    _G.InstaResetLoaded = nil -- v1.9.4: sonst bleibt nach Neustart die tote Insta-Reset-Instanz aktiv
+    _G.InstaReset = nil
     _G.BloodHoundsRunning = false
     if type(stopAllBackgroundTasks) == "function" then pcall(stopAllBackgroundTasks) end
     for _, conn in ipairs(self.Connections) do pcall(function() conn:Disconnect() end) end
@@ -418,7 +420,31 @@ do
         return v
     end})
 end
-local UIS = game:GetService("UserInputService")
+local UIS
+do -- v1.9.4: UIS-Proxy, damit InputBegan/Ended/Changed bei Destroy getrennt werden
+    local realUIS = game:GetService("UserInputService")
+    local sigs = {}
+    for _, n in ipairs({"InputBegan", "InputEnded", "InputChanged"}) do
+        local sig = realUIS[n]
+        sigs[n] = setmetatable({}, {__index = function(_, k)
+            if k == "Connect" or k == "connect" then
+                return function(_, fn) return ShoxHubState:Track(sig:Connect(fn)) end
+            end
+            local v = sig[k]
+            if type(v) == "function" then return function(_, ...) return v(sig, ...) end end
+            return v
+        end})
+    end
+    UIS = setmetatable({}, {
+        __index = function(_, k)
+            if sigs[k] then return sigs[k] end
+            local v = realUIS[k]
+            if type(v) == "function" then return function(_, ...) return v(realUIS, ...) end end
+            return v
+        end,
+        __newindex = function(_, k, v) realUIS[k] = v end,
+    })
+end
 local TS = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
 local HS = game:GetService("HttpService")
@@ -484,7 +510,7 @@ CS = 30
 LAGGER_SPEED = 15
 LAGGER_CARRY_SPEED = 24.5
 MEDUSA_COOLDOWN = 25
-BAT_AIMBOT_SPEED = 58
+BAT_AIMBOT_SPEED = 60
 MOBILE_PANEL_WIDTH = 128
 MOBILE_PANEL_HEIGHT = 294
 CONFIG_FILE = "FictionHub.json"
@@ -4113,11 +4139,18 @@ local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
     local alpha = 1 - math.exp(-safeDt * 24)
 
     local targetVel = _V3new(desiredX, 0, desiredZ)
-    local smoothed = _V3new(current.X, 0, current.Z):Lerp(targetVel, alpha)
-    if smoothed.Magnitude > 0.001 then
-        smoothed = smoothed.Unit * speed
-    else
+    -- v1.9.4-fix: Bei Richtungswechsel sofort neue Richtung (kein Rueckwaerts-Lerp -> kein Pendeln)
+    local curFlat = _V3new(current.X, 0, current.Z)
+    local smoothed
+    if curFlat:Dot(targetVel) < 0 then
         smoothed = targetVel
+    else
+        smoothed = curFlat:Lerp(targetVel, alpha)
+        if smoothed.Magnitude > 0.001 then
+            smoothed = smoothed.Unit * speed
+        else
+            smoothed = targetVel
+        end
     end
     root.AssemblyLinearVelocity = _V3new(smoothed.X, current.Y, smoothed.Z)
 end
@@ -4172,6 +4205,8 @@ function ShoxAPFullReturn(side)
         local root = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
+        -- v1.9.4-fix: Wenn Steal nach 5s noch haengt, abbrechen damit Pfad weiterlaeuft
+        if isStealing and now - startedAt > 5 then isStealing = false end
         local spd = math.min(math.max(0, tonumber(NS) or 0), ShoxAPReturnCap())
         local lastP = list[#list]
         local tgtP = list[idx]
@@ -4200,10 +4235,7 @@ function ShoxAPFullReturn(side)
         mv = mv.Magnitude > 0.001 and mv.Unit or _V3zero
         framePos, framePrevDir = pos, (mv.Magnitude > 0 and mv or framePrevDir)
         -- am letzten Wegpunkt weich abbremsen (ab 12 Studs linear), kein Ueberschiessen
-        local useSpd = spd
-        if isLast and flatD < 12 then
-            useSpd = math.max(spd * (flatD / 12), 6)
-        end
+        local useSpd = spd -- v1.9.4-fix: exakter Carry Speed bis zum Ziel, kein Abbremsen
         -- Stuck: kaum Bewegung ueber 0.5s (nicht beim Steal-Hold, nicht kurz vorm Ziel)
         if not lastPos then
             lastPos, lastT = pos, now
@@ -4520,59 +4552,208 @@ function stopAimbotAdapt()
     end
     _prevAutoRotate = nil
     lastMoveDir = _V3zero
+    if ShoxBatResetTarget then ShoxBatResetTarget() end
     _unsuppressBodyLock(true)
+end
+
+-- v1.9.4: BAT AIMBOT = Clean-Hub Bat Bypass (Ping-Vorhalt, Beschleunigung, Luft-Vorhersage) in EINEM Modul.
+-- Nur dieses eine System schreibt Velocity/AngularVelocity solange autoBatEnabled an ist
+-- (CarrySystem, Auto TP Down, Body Lock, Auto L/R sind in dieser Zeit gesperrt).
+ShoxBatLaggerSpeed = 40
+ShoxBatCfg = {
+    ACTIVATE_DISTANCE = 13, MIN_FOLLOW_DISTANCE = 1, PREDICTION_TIME = 0.22, PREDICT_AHEAD = 3,
+    MAX_VELOCITY_CHANGE = 150, VELOCITY_SMOOTHING = 0.2, MAX_HORIZONTAL_VELOCITY = 80,
+    SERVER_TICKRATE = 1 / 60, MIN_PING = 0.03, MAX_PING = 0.25, ACCEL_WEIGHT = 0.3,
+    DIR_CHANGE_TIME = 0.12, QUICK_MULT = 1.5, GRAVITY = 196.2, AIR_CONTROL = 0.8, MIN_AIRBORNE = 0.08,
+}
+ShoxBatPing = {sec = 0.1, ms = 0, at = 0}
+ShoxBatZ = nil
+
+function ShoxBatResetTarget()
+    ShoxBatZ = {
+        target = nil, lastPos = nil, vel = _V3zero, smooth = _V3zero,
+        velHist = {}, accHist = {}, airHist = {},
+        prevDir = nil, lastDirT = 0, airT = 0, lastHit = 0,
+    }
+end
+ShoxBatResetTarget()
+
+function ShoxBatAvg(list)
+    local n = #list
+    if n == 0 then return _V3zero end
+    local sum = _V3zero
+    for i = 1, n do sum = sum + list[i] end
+    return sum / n
+end
+
+function ShoxBatPush(list, value, maxN)
+    list[#list + 1] = value
+    if #list > maxN then table.remove(list, 1) end
+end
+
+function ShoxBatSamplePing(now)
+    if now - ShoxBatPing.at < 0.5 then return end
+    ShoxBatPing.at = now
+    local ok, value = pcall(function()
+        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and type(value) == "number" then ShoxBatPing.ms = math.floor(value) end
+    ShoxBatPing.sec = _clamp(ShoxBatPing.ms / 1000, ShoxBatCfg.MIN_PING, ShoxBatCfg.MAX_PING)
+end
+
+function ShoxBatStep(dt)
+    if not autoBatEnabled then return end
+    local char = LP.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not root or not hum or hum.Health <= 0 then return end
+    local Z, C = ShoxBatZ, ShoxBatCfg
+    local now = _tick()
+    ShoxBatSamplePing(now)
+    hum.AutoRotate = false
+
+    -- Bat sicher in der Hand haben (findBat equipt aus dem Rucksack)
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not (tool and isBatTool(tool)) then
+        local bat = findBat()
+        if bat then
+            if bat.Parent ~= char then pcall(function() hum:EquipTool(bat) end) end
+            tool = bat
+        end
+    end
+
+    -- v1.9.4-hotfix1: Target-Hysterese. Vorher wurde alle 0.03s der NAECHSTE Player gewaehlt
+    -- -> bei 2+ Gegnern Pendeln. Jetzt: einmal gelockt, bleiben bis tot oder out-of-range.
+    local target = Z.target
+    if target then
+        local tchar0 = target.Parent
+        local thum0 = tchar0 and tchar0:FindFirstChildOfClass("Humanoid")
+        if not tchar0 or not thum0 or thum0.Health <= 0
+           or (target.Position - root.Position).Magnitude > 40 then
+            target = nil
+        end
+    end
+    if not target then
+        local fresh = getClosestTarget()
+        if fresh ~= Z.target then
+            ShoxBatResetTarget()
+            Z = ShoxBatZ
+            Z.target = fresh
+        end
+        target = fresh
+    end
+    local tchar = target and target.Parent
+    local thum = tchar and tchar:FindFirstChildOfClass("Humanoid")
+    if not target or not thum or thum.Health <= 0 then
+        ShoxBatResetTarget()
+        return
+    end
+
+    local targetPos = target.Position
+    local safeDt = math.max(tonumber(dt) or (1 / 60), 1 / 240)
+
+    -- Gegner-Geschwindigkeit aus Positionsdifferenz, Ausreisser gefiltert
+    if Z.lastPos then
+        local raw = (targetPos - Z.lastPos) / safeDt
+        local delta = raw - Z.vel
+        if delta.Magnitude > C.MAX_VELOCITY_CHANGE then
+            raw = Z.vel + delta.Unit * C.MAX_VELOCITY_CHANGE
+        end
+        local horiz = _V3new(raw.X, 0, raw.Z)
+        if horiz.Magnitude > C.MAX_HORIZONTAL_VELOCITY then
+            horiz = horiz.Unit * C.MAX_HORIZONTAL_VELOCITY
+            raw = _V3new(horiz.X, raw.Y, horiz.Z)
+        end
+        ShoxBatPush(Z.accHist, (raw - Z.vel) / safeDt, 4)
+        ShoxBatPush(Z.velHist, raw, 8)
+        Z.vel = raw
+        Z.smooth = Z.smooth:Lerp(raw, C.VELOCITY_SMOOTHING)
+    end
+    Z.lastPos = targetPos
+
+    local airborne = thum.FloorMaterial == Enum.Material.Air
+    Z.airT = airborne and (Z.airT + safeDt) or 0
+    if airborne and Z.airT >= C.MIN_AIRBORNE then
+        ShoxBatPush(Z.airHist, Z.vel, 6)
+    elseif not airborne then
+        Z.airHist = {}
+    end
+
+    local predVel = Z.smooth
+    if airborne and #Z.airHist > 0 then
+        local a = ShoxBatAvg(Z.airHist)
+        predVel = _V3new(a.X, Z.vel.Y, a.Z) * C.AIR_CONTROL
+    end
+
+    -- schnelle Richtungswechsel erkennen -> mehr Vorhalt
+    local quickTurn = false
+    local hv = _V3new(Z.vel.X, 0, Z.vel.Z)
+    if hv.Magnitude > 5 then
+        local dir = hv.Unit
+        if Z.prevDir and Z.prevDir:Dot(dir) < 0.5 then
+            quickTurn = now - Z.lastDirT < C.DIR_CHANGE_TIME
+            Z.lastDirT = now
+        end
+        Z.prevDir = dir
+    end
+
+    local delay = ShoxBatPing.sec + C.SERVER_TICKRATE
+    if quickTurn then delay = delay * C.QUICK_MULT end
+
+    local predicted = targetPos + predVel * delay
+    predicted = predicted + ShoxBatAvg(Z.accHist) * C.ACCEL_WEIGHT * (delay * delay * 0.5)
+    local pt = C.PREDICTION_TIME * 1.1
+    predicted = predicted + predVel * pt
+    if airborne then
+        predicted = predicted + _V3new(0, -0.5 * C.GRAVITY * pt * pt, 0)
+    end
+    local flat = _V3new(predVel.X, 0, predVel.Z)
+    if flat.Magnitude > 1 then predicted = predicted + flat.Unit * C.PREDICT_AHEAD end
+
+    local toTarget = predicted - root.Position
+    -- Ausrichtung zum Vorhalt-Punkt
+    if toTarget.Magnitude > 0.01 then
+        local axis = root.CFrame.LookVector:Cross(toTarget.Unit)
+        local angle = math.asin(_clamp(axis.Magnitude, -1, 1))
+        root.AssemblyAngularVelocity = axis.Magnitude > 0.01 and (axis.Unit * angle * 80) or _V3zero
+    end
+
+    -- Schlag
+    if tool and isBatTool(tool) and (targetPos - root.Position).Magnitude <= C.ACTIVATE_DISTANCE
+       and now - Z.lastHit >= 0.3 then
+        Z.lastHit = now
+        pcall(function() tool:Activate() end)
+    end
+
+    -- Verfolgen (im Lagger-Modus langsamer, wie Clean Hub)
+    local speed = tonumber(BAT_AIMBOT_SPEED) or 60
+    if CarrySystem and CarrySystem.laggerMode ~= 0 then speed = math.min(speed, ShoxBatLaggerSpeed) end
+    -- v1.9.4-fix: Dead-Zone anhand ECHTER Distanz (nicht Vorhalt), verhindert Pendeln am Ziel
+    local realDist = (targetPos - root.Position).Magnitude
+    if realDist <= C.MIN_FOLLOW_DISTANCE + 0.5 then
+        root.AssemblyLinearVelocity = _V3new(0, root.AssemblyLinearVelocity.Y, 0)
+    else
+        local mv = toTarget
+        if mv.Magnitude < 0.01 then mv = targetPos - root.Position end
+        if mv.Magnitude > 0.01 then
+            local proxScale = math.clamp(realDist / (C.MIN_FOLLOW_DISTANCE * 8), 0.4, 1)
+            root.AssemblyLinearVelocity = mv.Unit * (speed * proxScale)
+        end
+    end
 end
 
 function startAimbotAdapt()
     if _aimbotConn then return end
     _suppressBodyLock()
+    ShoxBatResetTarget()
     local hum0 = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
     if hum0 then
         if _prevAutoRotate == nil then _prevAutoRotate = hum0.AutoRotate end
         hum0.AutoRotate = false
     end
-    _aimbotConn = RunService.RenderStepped:Connect(function()
-        if not autoBatEnabled then return end
-        local char = LP.Character
-        if not char then return end
-        local root = char:FindFirstChild("HumanoidRootPart")
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum then return end
-        if not char:FindFirstChildOfClass("Tool") then
-            local bat = findBat()
-            if bat then pcall(function() hum:EquipTool(bat) end) end
-        end
-        local target = getClosestTarget()
-        if not target then return end
-        local targetVel = target.AssemblyLinearVelocity
-        local myPos = root.Position
-        local targetPos = target.Position
-        local predictPos = targetPos + targetVel * 0.14
-        predictPos = predictPos + target.CFrame.LookVector * 0.3
-        local direction = predictPos - myPos
-        local flatDir = _V3new(direction.X, 0, direction.Z)
-        if flatDir.Magnitude > 0 then flatDir = flatDir.Unit else flatDir = _V3new(0,0,0) end
-        local desiredHeight = targetPos.Y + 3.7
-        local yVel = (desiredHeight - myPos.Y) * 19.5 + targetVel.Y * 0.8
-        if hum.FloorMaterial ~= Enum.Material.Air then yVel = math.max(yVel, 13) end
-        yVel = _clamp(yVel, -70, 110)
-        local desiredVel = _V3new(flatDir.X * BAT_AIMBOT_SPEED, yVel, flatDir.Z * BAT_AIMBOT_SPEED)
-        root.AssemblyLinearVelocity = root.AssemblyLinearVelocity:Lerp(desiredVel, 0.8)
-        local speed3 = targetVel.Magnitude
-        local predictTime = _clamp(speed3 / 150, 0.05, 0.2)
-        local predictedPos = targetPos + targetVel * predictTime
-        local toPredict = predictedPos - myPos
-        if toPredict.Magnitude > 0.1 then
-            local goalCF = _CFlookAt(myPos, predictedPos)
-            local diffCF = root.CFrame:Inverse() * goalCF
-            local rx, ry, rz = diffCF:ToEulerAnglesXYZ()
-            rx = _clamp(rx, -2.5, 2.5)
-            ry = _clamp(ry, -2.5, 2.5)
-            rz = _clamp(rz, -2.5, 2.5)
-            root.AssemblyAngularVelocity = root.CFrame:VectorToWorldSpace(_V3new(rx * 42, ry * 42, rz * 42))
-        end
-        local distToTarget = (root.Position - target.Position).Magnitude
-        if distToTarget <= 8 then trySwing() end
+    _aimbotConn = RunService.RenderStepped:Connect(function(dt)
+        local ok, err = pcall(ShoxBatStep, dt)
+        if not ok then shoxWarn("BatAimbot", err, 5) end
     end)
 end
 
@@ -4776,7 +4957,9 @@ local function tpBatUpdate()
     if camera then
         camera.CFrame = _CFnew(camera.CFrame.Position, targetRoot.Position)
     end
-    tpBatHit()
+    -- v1.9.4-hotfix1: Server braucht 1-2 Frames um die neue Position zu bestaetigen.
+    -- Hit vorher -> Schlag landet am alten Spot -> "geht ins Leere".
+    task.delay(0.03, tpBatHit)
 
     pcall(function()
         for _, part in ipairs(character:GetDescendants()) do
@@ -5230,18 +5413,10 @@ function runDropBrainrot()
                 local c = LP.Character
                 local r = c and c:FindFirstChild("HumanoidRootPart")
                 if not r then break end
-                local vel = r.AssemblyLinearVelocity
-                vel = _V3new(0, vel.Y, 0)
-                -- The former 10,000-stud/s impulse caused severe server correction/lagback.
-                r.AssemblyLinearVelocity = _V3new(
-                    vel.X,
-                    math.clamp(vel.Y + 60, -60, 60),
-                    vel.Z
-                )
-                RunService.RenderStepped:Wait()
-                if r and r.Parent then r.AssemblyLinearVelocity = vel end
-                RunService.Stepped:Wait()
-                if r and r.Parent then r.AssemblyLinearVelocity = vel + _V3new(0, 0.1, 0) end
+                -- v1.9.4-hotfix1: Echter Impuls. Vorher wurde die Boost-Velocity 1 Frame spaeter
+                -- auf ~0 zurueckgesetzt -> effektiv nur ~20 Y = nichts passierte. Jetzt 150 Y
+                -- pro Heartbeat-Frame (15 Frames in 0.25s = echter Drop-Impuls).
+                r.AssemblyLinearVelocity = _V3new(0, 150, 0)
             end
             if ShoxDropToken == dropToken then finishDrop(flingThread) end
         end)
@@ -6905,8 +7080,8 @@ function loadAllSettings()
     local savedBatAimbotSpeed = tonumber(data.batAimbotSpeed)
     -- Migrate the previous built-in default (58) to the faster V30 default.
     -- Other saved values remain user-configurable, within the UI-supported range.
-    if savedBatAimbotSpeed == 50 or savedBatAimbotSpeed == 90 then
-        BAT_AIMBOT_SPEED = 58
+    if savedBatAimbotSpeed == 50 or savedBatAimbotSpeed == 90 or savedBatAimbotSpeed == 58 then
+        BAT_AIMBOT_SPEED = 60
     elseif savedBatAimbotSpeed then
         BAT_AIMBOT_SPEED = readNumber(savedBatAimbotSpeed, BAT_AIMBOT_SPEED, 1, 200)
     end
@@ -7232,7 +7407,7 @@ function resetToFactoryDefaults()
         ShoxAutoFull = false
         bodyLockOffWhileCarry = true
         autoAfterDrop = "Off"
-        BAT_AIMBOT_SPEED = 58
+        BAT_AIMBOT_SPEED = 60
         dropMode = 1
         stretchEnabled = false
         stretchFOV = 120
@@ -7440,6 +7615,7 @@ do
         local function instaResetFast()
             if resetCooldown then return end
             resetCooldown     = true
+            _G.InstaResetBusy = true
             resetSuccessful   = false
             stopResetSequence = false
             cameraLocked      = false
@@ -7519,6 +7695,7 @@ do
 
                 cameraLocked      = false
                 resetCooldown     = false
+                _G.InstaResetBusy = false
                 resetThread       = nil
                 currentResetChar  = nil
                 stopResetSequence = false
@@ -7538,12 +7715,13 @@ do
             stopResetSequence = true
             if resetThread then pcall(task.cancel, resetThread); resetThread = nil end
             resetCooldown    = false
+            _G.InstaResetBusy = false
             currentResetChar = nil
             cameraLocked     = false
         end)
 
         task.spawn(function()
-            while true do
+            while ShoxHubState.Running do
                 task.wait(0.016)
                 local cam = workspace.CurrentCamera
                 if cameraLocked and lockedCameraCFrame and cam then
@@ -10258,13 +10436,20 @@ ShoxHubAutoTPLastAt = 0
 ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
 
--- v1.9.3: Auto TP Down exakt wie Clean Hub: FloorMaterial == Air UND root.Y >= Hoehe UND 0.35s Abstand
+-- v1.9.4: Auto TP Down nur beim Fallen (Air + Y>=Hoehe + Fall-Velocity), pausiert bei Drop/Aimbot/TP Bat/Auto L-R
 RunService.Heartbeat:Connect(function()
     if not ShoxHubAutoTPDown then return end
+    -- v1.9.4: Sperren zurueck. Waehrend Aimbot/TP Bat/Drop/Auto L-R schreibt ein anderes System die Position.
+    if dropActive == true or autoBatEnabled == true or batDesyncTpEnabled == true
+       or autoLeftEnabled == true or autoRightEnabled == true
+       or (_G.InstaResetBusy == true) then return end
     local ch = LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if root and hum and hum.FloorMaterial == Enum.Material.Air and root.Position.Y >= ShoxHubAutoTPDownHeight and tick() - ShoxHubAutoTPLastAt >= 0.35 then
+    if root and hum and hum.Health > 0 and hum.FloorMaterial == Enum.Material.Air
+       and root.Position.Y >= ShoxHubAutoTPDownHeight
+       and root.AssemblyLinearVelocity.Y < -2
+       and tick() - ShoxHubAutoTPLastAt >= 0.35 then
         ShoxHubAutoTPLastAt = tick()
         doTpDown()
     end
