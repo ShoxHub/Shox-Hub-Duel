@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.7.4"
+ShoxHubState.Version     = "v1.7.5"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -2684,8 +2684,27 @@ function ShoxGetGroundHit(char, root)
             if p.Character and p.Character ~= char then table.insert(ignore, p.Character) end
         end
         ShoxGroundParams.FilterDescendantsInstances = ignore
+        ShoxGroundIgnore = ignore
     end
-    return workspace:Raycast(root.Position, Vector3.new(0, -2000, 0), ShoxGroundParams)
+    -- v1.7.5: fast unsichtbare Teile (Transparency >= 0.95, z.B. Barrieren/Trigger) zaehlen nicht als Boden.
+    -- Findet sich nichts anderes, wird der erste Treffer trotzdem genutzt.
+    local origin, dir = root.Position, Vector3.new(0, -2000, 0)
+    local firstHit, extra = nil, nil
+    for _ = 1, 4 do
+        local hit = workspace:Raycast(origin, dir, ShoxGroundParams)
+        if not hit then break end
+        firstHit = firstHit or hit
+        local inst = hit.Instance
+        if inst:IsA("Terrain") or inst.Transparency < 0.95 then
+            if extra then ShoxGroundParams.FilterDescendantsInstances = ShoxGroundIgnore end
+            return hit
+        end
+        extra = extra or table.clone(ShoxGroundIgnore)
+        table.insert(extra, inst)
+        ShoxGroundParams.FilterDescendantsInstances = extra
+    end
+    if extra then ShoxGroundParams.FilterDescendantsInstances = ShoxGroundIgnore end
+    return firstHit
 end
 
 function ShoxGetStandOffset(humanoid, root)
@@ -10770,27 +10789,50 @@ ShoxHubE01StartedAt = nil
 ShoxHubE01Gui = nil
 
 ShoxHubAutoTPCheckAt = 0
+ShoxAutoTPPrevY, ShoxAutoTPPrevT, ShoxAutoTPPrevChar = nil, 0, nil
+-- v1.7.5: Fall wird jetzt auch ueber die echte Y-Aenderung erkannt (Velocity.Y kann von anderen Systemen
+-- ueberschrieben/genullt sein), FloorMaterial-Pflicht entfernt, Debug: _G.ShoxATPDebug = true (Konsole)
 RunService.Heartbeat:Connect(function()
-    if not ShoxHubAutoTPDown then return end
-    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then return end
-    if autoBatEnabled == true or autoBatV2Enabled == true or batDesyncTpEnabled == true then return end
-    local now = os.clock()
-    if now - ShoxHubAutoTPCheckAt < 0.1 or now - ShoxHubAutoTPLastAt < 0.35 then return end
+    if not ShoxHubAutoTPDown then ShoxAutoTPPrevY = nil return end
     local ch = LP.Character
     local root = ch and ch:FindFirstChild("HumanoidRootPart")
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-    if not root or not hum or hum.Health <= 0 then return end
-    -- v1.7.3: nur noch "in der Luft" + nicht mehr stark steigend. Die alte Bedingung
-    -- (Velocity.Y < -25 + State-Filter) hat Auto TP Down praktisch nie ausgeloest.
-    if hum.FloorMaterial ~= Enum.Material.Air then return end
-    if hum:GetState() == Enum.HumanoidStateType.Seated then return end
-    -- v1.7.4: nur beim echten Fallen ausloesen (nicht beim Loslassen von Jump am Apex)
-    if root.AssemblyLinearVelocity.Y > -6 then return end
+    if not root or not hum or hum.Health <= 0 then ShoxAutoTPPrevY = nil return end
+    local now = os.clock()
+    local y = root.Position.Y
+    local fallSpeed = 0
+    if ShoxAutoTPPrevChar == ch and ShoxAutoTPPrevY and now > ShoxAutoTPPrevT then
+        fallSpeed = (ShoxAutoTPPrevY - y) / (now - ShoxAutoTPPrevT)
+    end
+    ShoxAutoTPPrevChar, ShoxAutoTPPrevY, ShoxAutoTPPrevT = ch, y, now
+    local falling = root.AssemblyLinearVelocity.Y <= -6 or (fallSpeed >= 6 and fallSpeed < 400)
+    if not falling then return end
+    local why
+    if autoLeftEnabled == true or autoRightEnabled == true or dropActive == true then
+        why = "blockiert: Auto Left/Right/Drop"
+    elseif autoBatEnabled == true or autoBatV2Enabled == true or batDesyncTpEnabled == true then
+        why = "blockiert: Bat-Modus"
+    elseif now - ShoxHubAutoTPCheckAt < 0.05 or now - ShoxHubAutoTPLastAt < 0.35 then
+        return
+    elseif hum:GetState() == Enum.HumanoidStateType.Seated then
+        why = "sitzt"
+    end
+    if why then
+        if _G.ShoxATPDebug then shoxWarn("ATPD", why, 2) end
+        return
+    end
     ShoxHubAutoTPCheckAt = now
     local hit = ShoxGetGroundHit(ch, root)
-    if not hit then return end
+    if not hit then
+        if _G.ShoxATPDebug then shoxWarn("ATPD", "kein Boden gefunden", 2) end
+        return
+    end
     local height = root.Position.Y - hit.Position.Y
-    if height >= math.max(tonumber(ShoxHubAutoTPDownHeight) or 20, 6) then
+    local need = math.max(tonumber(ShoxHubAutoTPDownHeight) or 20, 6)
+    if _G.ShoxATPDebug then
+        shoxWarn("ATPD", string.format("fall vy=%.1f dy/dt=%.1f hoehe=%.1f noetig=%.1f boden=%s", root.AssemblyLinearVelocity.Y, fallSpeed, height, need, hit.Instance:GetFullName()), 0.5)
+    end
+    if height >= need then
         ShoxHubAutoTPLastAt = now
         doTpDown()
     end
