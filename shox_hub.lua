@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.12"
+ShoxHubState.Version     = "v1.9.13"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -370,8 +370,11 @@ local function shoxIntroLoadAudio()
     return nil
 end
 
+-- v1.9.13: Konsolen-Log fuer die Intros (nur warn, nichts Sichtbares im Spiel)
+function ShoxIntroLog(msg) pcall(warn, "[ShoxIntro] " .. tostring(msg)) end
+
 -- ============================================================
--- v1.9.12: Intro 2 (Edit-Style zum eigenen Song, Audio ist eingebettet -> kein Download noetig)
+-- v1.9.13: Intro 2 (Edit-Style zum eigenen Song, Audio ist eingebettet -> kein Download noetig)
 -- Kick = Zoom-Punch + Letter-Slam, Flash = Invert-Frame, am Ende Fade Out. Gleiche Font wie Intro 1.
 -- ============================================================
 do
@@ -1800,6 +1803,7 @@ OJlVh4IszclxnA9AloABAwPQIgF+KREOl+F7jFYMTkpdlasBAEVX+U6/KnRP/ovwIlw+IQCGepBOe/mE
 o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEFK6piZKVRxQJYUavlJEOVfFt6les2r9Zaa60Q/qpYEFBUxSBajVZB1WgVgxislDl7d5L1MgG4bsvJ+7Ob
 +5V5d3dVgCDyvk7YXVdrrbK5Nfe+TiDnnPPuvrsutr4/y2U6O87M9+dM3hsyq12t9fPnTDa35nKfZdNAvevCyVa2Ot+Zs/+c2UQ3M7DaVbKbW53jXCuwuXXr1q1bt+ayuXUrsLl169at2UBc5VZdYwA=
 ]==]
+
     local EXPECT = 170753
 
     local function decode(s)
@@ -1814,6 +1818,7 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
             if ok and type(r) == "string" and #r == EXPECT then return r end
         end
         -- Fallback: eigener Decoder (laeuft im eigenen Thread, yieldet regelmaessig)
+        ShoxIntroLog("Executor-Base64 nicht nutzbar -> eigener Decoder")
         local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         local map = {}
         for i = 1, 64 do map[chars:byte(i)] = i - 1 end
@@ -1835,19 +1840,30 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
 
     function ShoxIntro2LoadAudio()
         local assetFn = getcustomasset or getsynasset or getasset
-        if type(assetFn) ~= "function" or not writefile then return nil end
+        if type(assetFn) ~= "function" or not writefile then
+            ShoxIntroLog("Audio: getcustomasset/writefile fehlt -> Intro 2 laeuft ohne Ton")
+            return nil
+        end
         pcall(function() if makefolder then makefolder(ShoxIntro.Dir) end end)
         pcall(function() if makefolder then makefolder(ShoxIntro.MusicDir) end end)
         local path = ShoxIntro.MusicDir .. "/shox_intro2.ogg"
         local have = false
         pcall(function() have = isfile and isfile(path) and #readfile(path) == EXPECT end)
         if not have then
+            local t0 = os.clock()
             local okDec, bin = pcall(decode, B64)
-            if not okDec or type(bin) ~= "string" or #bin ~= EXPECT then return nil end
-            if not pcall(writefile, path, bin) then return nil end
+            if not okDec then ShoxIntroLog("Audio: Decode-Fehler: " .. tostring(bin)); return nil end
+            if type(bin) ~= "string" or #bin ~= EXPECT then
+                ShoxIntroLog("Audio: falsche Laenge " .. tostring(type(bin) == "string" and #bin or bin) .. " (erwartet " .. EXPECT .. ")")
+                return nil
+            end
+            local okW, errW = pcall(writefile, path, bin)
+            if not okW then ShoxIntroLog("Audio: writefile fehlgeschlagen: " .. tostring(errW)); return nil end
+            ShoxIntroLog(string.format("Audio: entpackt + gespeichert in %.2fs", os.clock() - t0))
         end
         local ok, asset = pcall(assetFn, path)
         if ok and type(asset) == "string" then return asset end
+        ShoxIntroLog("Audio: getcustomasset fehlgeschlagen: " .. tostring(asset))
         return nil
     end
 
@@ -1863,8 +1879,12 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
         {9.23, 1.3}, {9.52, 1.3}, {9.87, 1.6}, {10.20, 2.4, "end"},
     }
     local FADE_START, FADE_END, DONE = 10.45, 10.92, 10.97
+    local MAX_WAIT = 7 -- so lange wartet Intro 2 max. auf den Ton, danach startet es auch ohne
 
-    function ShoxIntro2Play()
+    -- v1.9.13: Das GUI steht SOFORT (kein leerer Bildschirm waehrend Audio entpackt/laedt).
+    -- Die Zeit laeuft per os.clock() (ab ShoxIntro.GoAt), der Song haelt sie nur synchron.
+    -- Jeder Frame laeuft in pcall, harte Zeitgrenze beendet das Intro garantiert.
+    function ShoxIntro2Play(my)
         local white, black = Color3.fromRGB(255, 255, 255), Color3.fromRGB(0, 0, 0)
         local subColor = Color3.fromRGB(200, 200, 200)
         local introParent = shoxIntroParent()
@@ -1892,14 +1912,14 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
             Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, ClipsDescendants = true, Active = false,
         }, gui)
         local REP = 26
-        local ts = math.floor(64 * base)
+        local ts = math.clamp(math.floor(64 * base), 20, 100) -- v1.9.13: TextSize max. 100 (vorher bis 192 -> Fehler)
         local rows = {}
         for r, y in ipairs({0.13, 0.33, 0.67, 0.87}) do
             rows[r] = {
                 y = y, dir = (r % 2 == 0) and 1 or -1,
                 lb = shoxIntroMake("TextLabel", {
                     AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 0, y, 0),
-                    Size = UDim2.fromOffset(30000, math.floor(ts * 1.2)), BackgroundTransparency = 1,
+                    Size = UDim2.fromOffset(16000, math.floor(ts * 1.2)), BackgroundTransparency = 1,
                     Text = string.rep("SHOX  ", REP), Font = Enum.Font.GothamBlack, TextSize = ts,
                     TextColor3 = white, TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, Active = false,
                 }, marq),
@@ -1921,7 +1941,7 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
             local us = shoxIntroMake("UIScale", {Scale = 1}, wrap)
             local label = shoxIntroMake("TextLabel", {
                 Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = character,
-                Font = Enum.Font.GothamBlack, TextSize = 76, TextColor3 = white, TextTransparency = 1, Active = false,
+                Font = Enum.Font.GothamBlack, TextSize = 76, TextColor3 = white, TextTransparency = 0.9, Active = false,
             }, wrap)
             letters[i] = {w = wrap, us = us, lb = label, x = x, rev = math.huge, bt = -10, ba = 0, dir = (i % 2 == 0) and 1 or -1}
         end
@@ -1946,14 +1966,15 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
         }, gui)
         shoxIntroMake("UICorner", {CornerRadius = UDim.new(0, 9)}, skip)
         shoxIntroMake("UIStroke", {Color = white, Thickness = 1, Transparency = 0.55}, skip)
-        skip.Activated:Connect(function() shoxIntroFinish() end)
+        skip.Activated:Connect(function() ShoxIntroLog("Skip gedrueckt"); shoxIntroFinish() end)
+        ShoxIntroLog(string.format("GUI steht (Viewport %dx%d, base %.2f, TextSize %d)", viewport.X, viewport.Y, base, ts))
 
-        local timeline, beatIndex = 0, 1
+        local timeline, lastTL, beatIndex = 0, 0, 1
         local pulse, shake, flashAlpha, invertUntil = 0, 0, 0, 0
         local lineP, subP, margP, marqPhase = 0, 0, 0, 0
         local marqOn, subOn, strobe, period = false, false, false, nil
         local startedAt = os.clock()
-        local audioStarted = false
+        local errCount, syncMode, firstFrame = 0, "", true
 
         local function bars(n, spread)
             for _ = 1, n do
@@ -2029,17 +2050,45 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
             end
         end
 
-        local sound = ShoxIntroSound
-        ShoxIntroHeartbeat = ShoxHubRunService.Heartbeat:Connect(function(dt)
-            if not ShoxIntro.Running then return end
-            if sound and sound.IsPlaying then
-                audioStarted = true
-                timeline = sound.TimePosition
-            elseif audioStarted or not sound or os.clock() - startedAt > 3 then
-                timeline = timeline + dt
+        local function step(dt)
+            local now = os.clock()
+
+            -- Warte-Phase (Audio wird noch entpackt/geladen): Bildschirm ist nie leer
+            if not ShoxIntro.Go then
+                local w = now - startedAt
+                local br = 0.5 + 0.5 * math.sin(w * 5)
+                line.Size = UDim2.fromOffset(math.floor(60 + 140 * br), 4)
+                line.BackgroundTransparency = 0.2 + 0.5 * (1 - br)
+                for _, e in ipairs(letters) do e.lb.TextTransparency = 0.9 - 0.12 * br end
+                if w > MAX_WAIT then
+                    ShoxIntroLog("Ton nach " .. MAX_WAIT .. "s nicht bereit -> Start ohne Ton")
+                    ShoxIntro.GoAt = now
+                    ShoxIntro.Go = true
+                end
+                return
             end
+
+            -- Zeitachse: freie Uhr (os.clock) ab Start, Song haelt sie nur synchron
+            local clockT = now - (ShoxIntro.GoAt or now)
+            timeline = clockT
+            local snd = ShoxIntroSound
+            if snd then
+                local okp, playing, tp = pcall(function() return snd.IsPlaying, snd.TimePosition end)
+                if okp and playing and tp and tp > 0.02 and math.abs(tp - clockT) < 0.6 then
+                    timeline = tp
+                    if syncMode ~= "song" then syncMode = "song"; ShoxIntroLog("Zeitachse: Song (TimePosition)") end
+                elseif syncMode ~= "uhr" and clockT > 1.2 then
+                    syncMode = "uhr"
+                    ShoxIntroLog(string.format("Zeitachse: Uhr (os.clock) - Song spielt=%s Pos=%s", tostring(playing), tostring(tp)))
+                end
+            end
+            if timeline < lastTL then timeline = lastTL end
+            lastTL = timeline
+            if firstFrame then firstFrame = false; ShoxIntroLog("Timeline laeuft") end
+
             while BEATS[beatIndex] and timeline >= BEATS[beatIndex][1] do
-                fireBeat(BEATS[beatIndex])
+                local okb, errb = pcall(fireBeat, BEATS[beatIndex])
+                if not okb then ShoxIntroLog("Beat " .. beatIndex .. " Fehler: " .. tostring(errb)) end
                 beatIndex = beatIndex + 1
             end
             local fade = math.clamp((timeline - FADE_START) / (FADE_END - FADE_START), 0, 1)
@@ -2097,40 +2146,110 @@ o1TE7CDmwCzGYiSLMTMxAQkA8FZ78uuyfuUh3u/F6um7xtjc1LUagmlt7G1hFSvWrQxqjFRVRRWLqlEF
             end
             skip.BackgroundTransparency = fade
             skip.TextTransparency = fade
-            if timeline >= DONE then shoxIntroFinish() end
+            if timeline >= DONE then
+                ShoxIntroLog(string.format("Ende (Timeline %.2fs)", timeline))
+                shoxIntroFinish()
+            end
+        end
+
+        ShoxIntroHeartbeat = ShoxHubRunService.Heartbeat:Connect(function(dt)
+            if not ShoxIntro.Running or ShoxIntro.Launch ~= my then return end
+            local ok, err = pcall(step, dt)
+            if not ok then
+                errCount = errCount + 1
+                if errCount <= 3 then ShoxIntroLog("Frame-Fehler " .. errCount .. ": " .. tostring(err)) end
+                if errCount >= 6 then
+                    ShoxIntroLog("Zu viele Fehler -> Intro wird beendet")
+                    shoxIntroFinish()
+                    return
+                end
+            end
+            -- harte Zeitgrenzen: das Intro endet IMMER
+            local now = os.clock()
+            if ShoxIntro.Go and ShoxIntro.GoAt and now - ShoxIntro.GoAt > DONE + 0.8 then
+                ShoxIntroLog("Zeitgrenze erreicht -> Ende")
+                shoxIntroFinish()
+            elseif not ShoxIntro.Go and now - startedAt > MAX_WAIT + 3 then
+                ShoxIntroLog("Start nie erfolgt -> Ende")
+                shoxIntroFinish()
+            end
+        end)
+        -- Notfall-Watchdog, unabhaengig von Heartbeat
+        task.delay(MAX_WAIT + DONE + 6, function()
+            if ShoxIntro.Running and ShoxIntro.Launch == my then
+                ShoxIntroLog("Watchdog: Intro 2 beendet")
+                shoxIntroFinish()
+            end
         end)
     end
 end
 
--- v1.9.12: gemeinsamer Start fuer Intro 1/2 (Autostart + Vorschau aus den Settings)
+-- v1.9.12/13: gemeinsamer Start fuer Intro 1/2 (Autostart + Vorschau aus den Settings)
 function ShoxIntroLaunch(choice)
     choice = (choice == 2) and 2 or 1
     if ShoxIntroGui or ShoxIntroSound then shoxIntroFinish() end
     ShoxIntro.Running = true
+    ShoxIntro.Go = false
+    ShoxIntro.GoAt = nil
     ShoxIntro.Launch = (ShoxIntro.Launch or 0) + 1
     local my = ShoxIntro.Launch
+    ShoxIntroLog("Start Intro " .. choice)
+
+    local function dead() return (not ShoxIntro.Running) or ShoxIntro.Launch ~= my end
+
+    if choice == 2 then
+        -- Bild sofort aufbauen, Ton laedt parallel im Hintergrund
+        local okp, errp = pcall(ShoxIntro2Play, my)
+        if not okp then
+            ShoxIntroLog("Intro-2-Aufbau fehlgeschlagen: " .. tostring(errp))
+            if ShoxIntro.Launch == my then shoxIntroFinish() end
+            return
+        end
+        task.spawn(function()
+            local asset = nil
+            local okA, errA = pcall(function() asset = ShoxIntro2LoadAudio() end)
+            if not okA then ShoxIntroLog("Audio-Fehler: " .. tostring(errA)) end
+            if dead() then return end
+            if asset then
+                local okS, errS = pcall(function()
+                    local sound = Instance.new("Sound")
+                    sound.Name = "ShoxCodeSniperIntroAudio"
+                    sound.SoundId = asset
+                    sound.Volume = 0.75
+                    sound.Looped = false
+                    sound.Parent = ShoxHubSoundService
+                    ShoxIntroSound = sound
+                    local t0 = os.clock()
+                    while not sound.IsLoaded and os.clock() - t0 < 3 do task.wait() end
+                    ShoxIntroLog(string.format("Sound IsLoaded=%s nach %.2fs", tostring(sound.IsLoaded), os.clock() - t0))
+                    if dead() then return end
+                    sound:Play()
+                end)
+                if not okS then ShoxIntroLog("Sound-Fehler: " .. tostring(errS)) end
+            end
+            if dead() then return end
+            ShoxIntro.GoAt = os.clock()
+            ShoxIntro.Go = true
+            ShoxIntroLog("Intro 2 startet (Ton=" .. tostring(ShoxIntroSound ~= nil) .. ")")
+        end)
+        return
+    end
+
     task.spawn(function()
         local asset = nil
-        pcall(function()
-            if choice == 2 then asset = ShoxIntro2LoadAudio() else asset = shoxIntroLoadAudio() end
-        end)
-        if not ShoxIntro.Running or ShoxIntro.Launch ~= my then return end
+        pcall(function() asset = shoxIntroLoadAudio() end)
+        if dead() then return end
         if asset then
             local sound = Instance.new("Sound")
             sound.Name = "ShoxCodeSniperIntroAudio"
             sound.SoundId = asset
-            sound.Volume = (choice == 2) and 0.75 or 0.6
+            sound.Volume = 0.6
             sound.Looped = false
             sound.Parent = ShoxHubSoundService
             ShoxIntroSound = sound
-            if choice == 2 then
-                local t0 = os.clock()
-                while not sound.IsLoaded and os.clock() - t0 < 2.5 do task.wait() end
-                if not ShoxIntro.Running or ShoxIntro.Launch ~= my then return end
-            end
             pcall(function() sound:Play() end)
         end
-        if choice == 2 then ShoxIntro2Play() else shoxIntroPlay() end
+        shoxIntroPlay()
     end)
 end
 
@@ -5389,58 +5508,68 @@ local function _isRagdollState(hum)
         or st == Enum.HumanoidStateType.FallingDown
 end
 
--- v1.9.12 Anti Lagback: (1) Velocity wird pro Physik-Schritt (Stepped) gesetzt statt pro Render-Frame,
--- (2) weiche Rampe statt hartem Sprung, (3) Server-/Game-Skripte sehen nur max. 16 horizontal (Spoof, nur Lesezugriffe fremder Caller).
-ShoxAntiLagback = true
-ShoxSpoofRoot = nil
-ShoxMoveVX, ShoxMoveVZ, ShoxMoveVT = nil, nil, 0
-
-function ShoxInstallVelSpoof()
-    if ShoxVelSpoofInstalled then return end
-    if type(hookmetamethod) ~= "function" or type(newcclosure) ~= "function" or type(checkcaller) ~= "function" then return end
-    ShoxVelSpoofInstalled = true
-    local oldIndex
-    local ok = pcall(function()
-        oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, k)
-            if (k == "AssemblyLinearVelocity" or k == "Velocity") and ShoxAntiLagback and self == ShoxSpoofRoot and not checkcaller() then
-                local real = oldIndex(self, k)
-                local hx, hz = real.X, real.Z
-                local m = math.sqrt(hx * hx + hz * hz)
-                if m > 16 then
-                    local s = 16 / m
-                    return Vector3.new(hx * s, real.Y, hz * s)
-                end
-                return real
+-- v1.9.13 Lag-Debug: _G.ShoxLagDebug = true -> warnt in der Konsole (nichts Sichtbares im Spiel)
+function ShoxLagDebugStep(hrp, hum, spd)
+    local now = os.clock()
+    local pos, vel = hrp.Position, hrp.AssemblyLinearVelocity
+    local L = ShoxLagDbg
+    if not L then
+        ShoxLagDbg = {pos = pos, t = now, wrote = nil, wroteT = 0, warnT = 0, sumT = now, sumD = 0, sumN = 0}
+        warn("[ShoxLag] Debug aktiv (Soll = Hub-Speed, Ist = echte Bewegung)")
+        return
+    end
+    local dt = now - L.t
+    if dt > 0 and dt < 0.5 then
+        local dx, dz = pos.X - L.pos.X, pos.Z - L.pos.Z
+        local jump = math.sqrt(dx * dx + dz * dz)
+        local moving = L.wrote and now - L.wroteT < 0.1 and (L.wrote.X ~= 0 or L.wrote.Z ~= 0)
+        if moving then L.sumD = L.sumD + jump; L.sumN = L.sumN + dt end
+        local expect = spd * dt
+        local back = false
+        if moving and jump > 1.5 then
+            back = (dx * L.wrote.X + dz * L.wrote.Z) < 0
+        end
+        local st = "?"
+        pcall(function() st = tostring(hum:GetState()) end)
+        if (jump > expect * 2 + 6 or back) and now - L.warnT > 0.25 then
+            L.warnT = now
+            warn(string.format("[ShoxLag] %s %.1f studs in %.3fs (Soll %.1f) | Modus %s | State %s | WS %.1f | Anchored %s",
+                back and "ZURUECKGEZOGEN" or "SPRUNG", jump, dt, expect, tostring(_G.AceCurrentSpeedMode), st, hum.WalkSpeed, tostring(hrp.Anchored)))
+        end
+        if moving then
+            local ex, ez = vel.X - L.wrote.X, vel.Z - L.wrote.Z
+            local diff = math.sqrt(ex * ex + ez * ez)
+            if moving and diff > math.max(12, spd * 0.6) and now - L.warnT > 0.25 then
+                L.warnT = now
+                warn(string.format("[ShoxLag] Velocity extern geaendert: gesetzt (%.1f, %.1f) -> jetzt (%.1f, %.1f) | Modus %s",
+                    L.wrote.X, L.wrote.Z, vel.X, vel.Z, tostring(_G.AceCurrentSpeedMode)))
             end
-            return oldIndex(self, k)
-        end))
-    end)
-    if not ok then ShoxVelSpoofInstalled = false end
+        end
+    end
+    if now - L.sumT > 1.5 then
+        if L.sumN > 0.3 then
+            warn(string.format("[ShoxLag] Soll %.1f | Ist %.1f studs/s | Modus %s | WS %.1f", spd, L.sumD / L.sumN, tostring(_G.AceCurrentSpeedMode), hum.WalkSpeed))
+        end
+        L.sumT, L.sumD, L.sumN = now, 0, 0
+    end
+    L.pos, L.t = pos, now
 end
-pcall(ShoxInstallVelSpoof)
 
-local function _applyVelocitySpeed(dir, speed, hrp, dt)
+function ShoxLagDebugWrote(hrp)
+    if ShoxLagDbg then ShoxLagDbg.wrote = hrp.AssemblyLinearVelocity; ShoxLagDbg.wroteT = os.clock() end
+end
+
+local function _applyVelocitySpeed(dir, speed, hrp)
     if not hrp or not hrp.Parent then return end
     if tick() < _globalMovementLock then return end
     if batDesyncTpEnabled or autoBatEnabled or dropActive == true then return end
-    local cur = hrp.AssemblyLinearVelocity
     if dir and dir.Magnitude > 0.05 then
         local unit = dir.Unit
-        local tx, tz = unit.X * speed, unit.Z * speed
-        local nx, nz = tx, tz
-        local now = os.clock()
-        if ShoxAntiLagback and dt and dt > 0 then
-            local px, pz = cur.X, cur.Z
-            if ShoxMoveVX and now - ShoxMoveVT < 0.1 then px, pz = ShoxMoveVX, ShoxMoveVZ end
-            local a = 1 - math.exp(-dt * 55)
-            nx = px + (tx - px) * a
-            nz = pz + (tz - pz) * a
-        end
-        ShoxMoveVX, ShoxMoveVZ, ShoxMoveVT = nx, nz, now
-        hrp.AssemblyLinearVelocity = _V3new(nx, cur.Y, nz)
+        local vy = hrp.AssemblyLinearVelocity.Y
+        hrp.AssemblyLinearVelocity = _V3new(unit.X * speed, vy, unit.Z * speed)
     else
-        ShoxMoveVX, ShoxMoveVZ = nil, nil
-        hrp.AssemblyLinearVelocity = _V3new(0, cur.Y, 0)
+        local vy = hrp.AssemblyLinearVelocity.Y
+        hrp.AssemblyLinearVelocity = _V3new(0, vy, 0)
     end
 end
 
@@ -6438,7 +6567,7 @@ local function forceExitRagdollV1()
         stateV1.isBoosting = true
         stateV1._lastBoostTime = _tick()
         local ow = hum.WalkSpeed
-        stateV1._origWS = (ow and ow >= 8) and ow or 16 -- v1.9.12: Originalwert merken
+        stateV1._origWS = (ow and ow >= 8) and ow or 16 -- v1.9.13: Originalwert merken
     end
     pcall(function() hum.WalkSpeed = spd end)
     if hum.Health > 0 then
@@ -7167,7 +7296,6 @@ function ShoxMarkStealStart(secs)
     ShoxCarryCache.t = 0
 end
 
-ShoxCarryNames = {"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}
 function ShoxIsCarrying()
     local now = os.clock()
     if now - ShoxCarryCache.t < 0.016 then return ShoxCarryCache.v end -- v1.9.10: pro Frame statt 50ms
@@ -7177,7 +7305,7 @@ function ShoxIsCarrying()
     if LP:GetAttribute("Stealing") == true or (char and char:GetAttribute("Stealing") == true) then
         v = true
     elseif char then
-        for _, n in ipairs(ShoxCarryNames) do
+        for _, n in ipairs({"Carrying","IsCarrying","Grabbed","Holding","StealHold","HasGrab"}) do
             local m = char:FindFirstChild(n)
             if m and ((m:IsA("BoolValue") and m.Value == true)
                 or (m:IsA("ObjectValue") and m.Value ~= nil)
@@ -9680,22 +9808,19 @@ function setupMovementAndIndicators(char)
         end
     end)
 
-    if ShoxMoveStep then ShoxMoveStep:Disconnect(); ShoxMoveStep = nil end
-    local lagLastPos
-    ShoxMoveStep = RunService.Stepped:Connect(function(_, sdt)
+    movementLoop = RunService.RenderStepped:Connect(function()
         local char2 = LP.Character
         if not char2 then return end
         local hum = char2:FindFirstChildOfClass("Humanoid")
         local hrp = char2:FindFirstChild("HumanoidRootPart")
         if not hum or not hrp then return end
-        ShoxSpoofRoot = hrp
+        if _G.ShoxLagDebug then pcall(ShoxLagDebugStep, hrp, hum, getActiveMoveSpeed()) end
 
         if not autoBatEnabled and not autoLeftEnabled and not autoRightEnabled
            and not dropActive and not batDesyncTpEnabled
            and not useCarrySystem then
             if _isRagdollState(hum) then
                 lastMoveDir = _V3zero
-                ShoxMoveVX, ShoxMoveVZ = nil, nil
             else
                 local md = hum.MoveDirection
                 local spd = getActiveMoveSpeed()
@@ -9710,28 +9835,10 @@ function setupMovementAndIndicators(char)
                     end
                     if not anyKey then lastMoveDir = _V3zero end
                 end
-                _applyVelocitySpeed(dir, spd, hrp, sdt)
+                _applyVelocitySpeed(dir, spd, hrp)
+                if _G.ShoxLagDebug then pcall(ShoxLagDebugWrote, hrp) end
             end
         end
-
-        -- Debug: _G.ShoxLagDebug = true -> warnt, wenn dich der Server/das Game zurueckzieht
-        if _G.ShoxLagDebug then
-            local p = hrp.Position
-            if lagLastPos and sdt and sdt > 0 then
-                local jump = (p - lagLastPos).Magnitude
-                if jump > (getActiveMoveSpeed() * sdt * 2 + 8) then
-                    warn(string.format("[ShoxLag] Sprung %.1f studs in %.3fs (Speed-Soll %.1f, Modus %s)", jump, sdt, getActiveMoveSpeed(), tostring(_G.AceCurrentSpeedMode)))
-                end
-            end
-            lagLastPos = p
-        end
-    end)
-
-    movementLoop = RunService.RenderStepped:Connect(function()
-        local char2 = LP.Character
-        if not char2 then return end
-        local hrp = char2:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
 
         if speedLabel and os.clock() - (ShoxSpeedLblT or 0) > 0.1 then
             ShoxSpeedLblT = os.clock()
@@ -9774,7 +9881,6 @@ end
 
 function stopAllBackgroundTasks()
     if movementLoop then movementLoop:Disconnect(); movementLoop = nil end
-    if ShoxMoveStep then ShoxMoveStep:Disconnect(); ShoxMoveStep = nil end
     if steppedConn then steppedConn:Disconnect(); steppedConn = nil end
     stopEnemySpeed()
     if stretchEnabled then disableStretch() end
@@ -10151,7 +10257,6 @@ function buildConfigTable()
         espEnabled = espEnabled,
         antiLag = antiLagEnabled,
         shoxIntroChoice = ShoxIntro.Choice,
-        shoxLagback = ShoxAntiLagback,
         tpBatEnabled = batDesyncTpEnabled,
         neonWeather = neonWeatherEnabled,
         skyTheme = skyTheme,
@@ -10373,8 +10478,6 @@ function loadAllSettings()
     unwalkEnabled = data.unwalk or false
     antiLagEnabled = data.antiLag or false
     ShoxIntro.Choice = (tonumber(data.shoxIntroChoice) == 2) and 2 or 1
-    ShoxAntiLagback = data.shoxLagback ~= false
-    if ShoxLagbackSetVisual then ShoxLagbackSetVisual(ShoxAntiLagback) end
     laggerToggled = data.laggerToggled or false
     speedMode = data.carryMode or false
     laggerCarryToggled = data.laggerCarryToggled or false
@@ -10900,7 +11003,6 @@ function resetToFactoryDefaults()
         autoRightEnabled = false
         unwalkEnabled = false
         antiLagEnabled = false
-        ShoxAntiLagback = true
         uiLocked = false
         mobileButtonsLocked = false
         editModeEnabled = false
@@ -12779,21 +12881,13 @@ function buildGui()
     do
         local row = mkRow(configPage, 38)
         mkLabel(row, "ShoxHub Intro")
-        -- v1.9.12: Intro 1 / Intro 2 wechseln, die Auswahl wird direkt als Vorschau abgespielt
+        -- v1.9.13: Intro 1 / Intro 2 wechseln, die Auswahl wird direkt als Vorschau abgespielt
         mkNeoSelector(row, "Intro " .. tostring(ShoxIntro.Choice or 1), {"Intro 1", "Intro 2"}, function(selected)
             ShoxIntro.Choice = (selected == "Intro 2") and 2 or 1
             pcall(saveAllSettings)
             if ShoxIntroLaunch then ShoxIntroLaunch(ShoxIntro.Choice) end
         end)
     end
-
-    mkSect(configPage, "Movement")
-    ShoxLagbackSetVisual = mkToggle(configPage, "Anti Lagback", function(on)
-        ShoxAntiLagback = on
-        if on and ShoxInstallVelSpoof then ShoxInstallVelSpoof() end
-        saveAllSettings()
-    end)
-    ShoxLagbackSetVisual(ShoxAntiLagback ~= false)
 
     mkSect(configPage, "UI Settings")
     do
