@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.8"
+ShoxHubState.Version     = "v1.9.9"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -27,6 +27,7 @@ end
 
 function ShoxHubState:Destroy()
     self.Running = false
+    pcall(function() if ShoxSpinSet then ShoxSpinSet(false) end end)
     _G.InstaResetLoaded = nil -- v1.9.4: sonst bleibt nach Neustart die tote Insta-Reset-Instanz aktiv
     _G.InstaReset = nil
     _G.BloodHoundsRunning = false
@@ -2599,6 +2600,11 @@ AP = {
     R1 = _V3new(-476.16, -6.52, 25.62),
     R2 = _V3new(-483.06, -5.03, 25.48),
     R_FACE = _V3new(-482.06, -6.93, 35.47),
+    -- v1.9.9: Rueckweg-Punkte aus antisammy_source.txt (AP_L3/L4, AP_R3/R4)
+    L3 = _V3new(-476.12, -6.59, 92.24),
+    L4 = _V3new(-467.23, -6.99, 22.54),
+    R3 = _V3new(-476.58, -6.49, 28.32),
+    R4 = _V3new(-468.26, -6.99, 97.54),
 }
 
 function isGamepadInput(inp)
@@ -4152,7 +4158,12 @@ end
 ShoxAutoFull = false
 function ShoxAPFullReturn(side)
     local isL = side == "L"
-    local list = isL and {AP.L1, AP.R1, AP.R2} or {AP.R1, AP.L1, AP.L2}
+    local list
+    if _G.ShoxAPClassic then -- _G.ShoxAPClassic = true -> alter v1.9.8-Weg (zum Vergleichen)
+        list = isL and {AP.L1, AP.R1, AP.R2} or {AP.R1, AP.L1, AP.L2}
+    else
+        list = isL and {AP.L3, AP.L4} or {AP.R3, AP.R4}
+    end
     local face = isL and AP.R_FACE or AP.L_FACE
     local idx, stuckN, lastPos, lastT, sideUntil, sideSign = 1, 0, nil, os.clock(), 0, 1
     local startedAt = os.clock()
@@ -7514,31 +7525,69 @@ function forceResetUI()
     saveAllSettings()
 end
 
+-- v1.9.9: Spin (Speed-Tab). Dreht den Charakter im Uhrzeigersinn, Bewegung/Speed bleiben unberuehrt (Speed laeuft ueber MoveDirection).
+ShoxSpinEnabled = false
+ShoxSpinConn = nil
+ShoxSpinOwnsAR = false
+ShoxSpinRadPerSec = 26
+function ShoxSpinSet(on)
+    ShoxSpinEnabled = (on == true)
+    if ShoxSpinConn then pcall(function() ShoxSpinConn:Disconnect() end); ShoxSpinConn = nil end
+    if not ShoxSpinEnabled then
+        if ShoxSpinOwnsAR then
+            ShoxSpinOwnsAR = false
+            pcall(function()
+                local c = LP.Character
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                if h then h.AutoRotate = true end
+            end)
+        end
+        return
+    end
+    ShoxSpinConn = RunService.Heartbeat:Connect(function(dt)
+        local c = LP.Character
+        local hrp = c and c:FindFirstChild("HumanoidRootPart")
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        if not hrp or not h or h.Health <= 0 then return end
+        if h.AutoRotate then h.AutoRotate = false; ShoxSpinOwnsAR = true end
+        hrp.CFrame = hrp.CFrame * CFrame.Angles(0, -ShoxSpinRadPerSec * math.min(dt, 0.1), 0)
+    end)
+    ShoxHubState:Track(ShoxSpinConn)
+end
+
+-- v1.9.9: Reset Positions. Bugs davor: Auto-Steal-Bar ging nach UNTEN (1,-60) statt auf die Default-Position,
+-- gespeicherte Positionen wurden nur bei vorhandenem MobilePanel geloescht, und es wurde nie gespeichert
+-- (beim naechsten Start kamen die alten Positionen zurueck).
 function resetFloatingPositions()
-    if MobilePanel and MobilePanel:FindFirstChild("FloatingPanel") then
-        local container = MobilePanel:FindFirstChild("FloatingPanel")
-        container.AnchorPoint = Vector2.new(1, 0)
-        container.Position = UDim2.new(1, -8, 0, 40)
-        savedMobilePanelPos = nil
-        savedButtonPositions = {}
-        if container:FindFirstChild("ButtonsContainer") then
-            for _, btn in ipairs(container.ButtonsContainer:GetChildren()) do
-                if btn:IsA("TextButton") and btn.Name then
-                    local defX, defY = getDefaultButtonPosition(btn.Name)
-                    btn.Position = UDim2.new(0, defX, 0, defY)
+    pcall(function()
+        local container = MobilePanel and MobilePanel:FindFirstChild("FloatingPanel")
+        if container then
+            container.AnchorPoint = Vector2.new(1, 0)
+            container.Position = UDim2.new(1, -8, 0, 40)
+            local bc = container:FindFirstChild("ButtonsContainer")
+            if bc then
+                for _, btn in ipairs(bc:GetChildren()) do
+                    if btn:IsA("GuiObject") then
+                        local defX, defY = getDefaultButtonPosition(btn.Name)
+                        btn.Position = UDim2.new(0, defX, 0, defY)
+                    end
                 end
             end
         end
-    end
-    if instaResetFloatingButton and instaResetFloatingButton:FindFirstChild("Frame") then
-        instaResetFloatingButton.Frame.Position = UDim2.new(0.5, 90, 0, 10)
-        instaResetFloatingPos = nil
-    end
-    if pbFrame then
-        pbFrame.Position = UDim2.new(0.5, -130, 1, -60)
-        savedProgressBarPos = nil
-    end
+    end)
+    pcall(function()
+        if instaResetFloatingButton and instaResetFloatingButton:FindFirstChild("Frame") then
+            instaResetFloatingButton.Frame.Position = UDim2.new(0.5, 90, 0, 10)
+        end
+    end)
+    pcall(function()
+        if pbFrame then pbFrame.Position = UDim2.new(0.5, -118, 0, 56) end
+    end)
     savedMobilePanelPos = nil
+    savedButtonPositions = {}
+    savedProgressBarPos = nil
+    instaResetFloatingPos = nil
+    if not _isResetting then pcall(saveAllSettings) end
 end
 
 function resetToFactoryDefaults()
@@ -7958,6 +8007,13 @@ function buildGui()
     local ON_COLOR = SILVER
     local STROKE_COLOR = Color3.fromRGB(50,50,50)
     local GUI_W, GUI_H = 330, 500
+    -- v1.9.9: gleicher Verlauf wie Mobile-Buttons und Steal-Bar
+    local MOB_GRAD = ColorSequence.new({
+        ColorSequenceKeypoint.new(0.00, Color3.fromRGB(71, 71, 71)),
+        ColorSequenceKeypoint.new(0.35, Color3.fromRGB(29, 29, 29)),
+        ColorSequenceKeypoint.new(0.70, Color3.fromRGB(10, 10, 10)),
+        ColorSequenceKeypoint.new(1.00, Color3.fromRGB(0, 0, 0)),
+    })
 
     local old = game:GetService("CoreGui"):FindFirstChild("FictionHub")
     if old then old:Destroy() end
@@ -7976,19 +8032,15 @@ function buildGui()
     main = Instance.new("Frame", gui)
     main.Size = UDim2.new(0, GUI_W, 0, GUI_H)
     main.Position = UDim2.new(0, 20, 0, 2)
-    main.BackgroundColor3 = Color3.fromRGB(5, 5, 5)
+    main.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     main.BackgroundTransparency = 0
     main.BorderSizePixel = 0
     main.ClipsDescendants = true
-    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 18)
+    Instance.new("UICorner", main).CornerRadius = UDim.new(0, 16)
     do -- v1.9.1: Verlauf wie die Mobile-Buttons
         local mg = Instance.new("UIGradient", main)
         mg.Rotation = 90
-        mg.Color = ColorSequence.new({
-            ColorSequenceKeypoint.new(0.00, Color3.fromRGB(26, 26, 26)),
-            ColorSequenceKeypoint.new(0.45, Color3.fromRGB(12, 12, 12)),
-            ColorSequenceKeypoint.new(1.00, Color3.fromRGB(4, 4, 4)),
-        })
+        mg.Color = MOB_GRAD
     end
     do -- v1.7.2: dezenter Fensterrahmen (neutral)
         local mainStroke = Instance.new("UIStroke", main)
@@ -8023,12 +8075,23 @@ function buildGui()
     local titleConstraint = Instance.new("UITextSizeConstraint", titleImage)
     titleConstraint.MaxTextSize = 54
     titleConstraint.MinTextSize = 22
+    do
+        local ta = Instance.new("Frame", titleFrame)
+        ta.Name = "TitleAccent"
+        ta.AnchorPoint = Vector2.new(0.5, 1)
+        ta.Position = UDim2.new(0.5, 0, 1, -4)
+        ta.Size = UDim2.new(0.42, 0, 0, 3)
+        ta.BackgroundColor3 = getThemeColor()
+        ta.BorderSizePixel = 0
+        ta.ZIndex = 21
+        Instance.new("UICorner", ta).CornerRadius = UDim.new(1, 0)
+    end
 
     local closeBtn = Instance.new("TextButton", main)
     closeBtn.Size = UDim2.new(0, 32, 0, 32)
     closeBtn.Position = UDim2.new(1, -42, 0, 8)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
-    closeBtn.BackgroundTransparency = 0.6
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    closeBtn.BackgroundTransparency = 0.05
     closeBtn.BorderSizePixel = 0
     closeBtn.Text = "−"
     closeBtn.TextColor3 = WHITE
@@ -8036,19 +8099,23 @@ function buildGui()
     closeBtn.TextSize = 26
     closeBtn.AutoButtonColor = false
     closeBtn.ZIndex = 200
-    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 8)
+    Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 10)
+    do
+        local cg = Instance.new("UIGradient", closeBtn); cg.Rotation = 90; cg.Color = MOB_GRAD
+        local cs = Instance.new("UIStroke", closeBtn); cs.Color = Color3.fromRGB(71, 71, 71); cs.Thickness = 1; cs.Transparency = 0.45
+    end
 
     closeBtn.MouseEnter:Connect(function()
         TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = Color3.fromRGB(20, 20, 20), BackgroundColor3 = getThemeColor()}):Play()
     end)
     closeBtn.MouseLeave:Connect(function()
-        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(31, 31, 31)}):Play()
+        TS:Create(closeBtn, TweenInfo.new(0.12), {TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
     end)
 
     miniBtn = Instance.new("TextButton", gui)
     miniBtn.Size = UDim2.new(0, 160, 0, 42)
     miniBtn.Position = UDim2.new(0, 16, 0, 58)
-    miniBtn.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    miniBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     miniBtn.BackgroundTransparency = 0
     miniBtn.BorderSizePixel = 0
     miniBtn.ClipsDescendants = true
@@ -8059,6 +8126,10 @@ function buildGui()
     miniBtn.ZIndex = 20
     miniBtn.Visible = false
     Instance.new("UICorner", miniBtn).CornerRadius = UDim.new(1, 0)
+    do
+        local mgd = Instance.new("UIGradient", miniBtn); mgd.Rotation = 90; mgd.Color = MOB_GRAD
+        local mst = Instance.new("UIStroke", miniBtn); mst.Color = Color3.fromRGB(71, 71, 71); mst.Thickness = 1; mst.Transparency = 0.45
+    end
 
     local miniTitleImage = Instance.new("TextLabel", miniBtn)
     miniTitleImage.Name = "MiniTitleImage"
@@ -8095,25 +8166,29 @@ function buildGui()
         return slideTweenGeneration
     end
 
+    local function ShoxTargetScale() return math.max((tonumber(uiScaleValue) or 100) / 100, 0.2) end
+
     showGui = function()
-        if not main or not miniBtn then return end
+        if not main or not miniBtn or not mainUIScale then return end
         local generation = cancelSlideTween()
         isMainSliding = true
+        main.Position = mainOriginalPos
+        mainUIScale.Scale = 0.02
         main.Visible = true
         miniBtn.Visible = false
-        main.Position = UDim2.new(0, -GUI_W - 20, 0, 2)
-        local tween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = mainOriginalPos})
+        local tween = TS:Create(mainUIScale, TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = ShoxTargetScale()})
         slideTween = tween
-        tween.Completed:Connect(function(playbackState)
+        tween.Completed:Connect(function()
             if generation ~= slideTweenGeneration or slideTween ~= tween then return end
             slideTween = nil
             isMainSliding = false
+            mainUIScale.Scale = ShoxTargetScale()
         end)
         tween:Play()
     end
 
     hideGui = function()
-        if not main or not miniBtn then return end
+        if not main or not miniBtn or not mainUIScale then return end
         if not main.Visible then
             cancelSlideTween()
             isMainSliding = false
@@ -8122,15 +8197,17 @@ function buildGui()
         end
         local generation = cancelSlideTween()
         isMainSliding = true
-        local targetPos = UDim2.new(0, -GUI_W - 20, 0, 2)
-        local tween = TS:Create(main, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = targetPos})
+        local tween = TS:Create(mainUIScale, TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.In), {Scale = 0.02})
         slideTween = tween
         tween.Completed:Connect(function(playbackState)
             if generation ~= slideTweenGeneration or slideTween ~= tween then return end
             slideTween = nil
             if playbackState == Enum.PlaybackState.Completed then
                 main.Visible = false
+                mainUIScale.Scale = ShoxTargetScale()
+                miniBtn.Size = UDim2.new(0, 70, 0, 18)
                 miniBtn.Visible = true
+                TS:Create(miniBtn, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 160, 0, 42)}):Play()
             end
             isMainSliding = false
         end)
@@ -8168,6 +8245,23 @@ function buildGui()
     tabContent.ClipsDescendants = true
     tabContent.ZIndex = 5
 
+    local function paintTab(b, active)
+        local g = b:FindFirstChildOfClass("UIGradient")
+        local st = b:FindFirstChildOfClass("UIStroke")
+        if active then
+            if g then g.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)),
+                ColorSequenceKeypoint.new(1.00, Color3.fromRGB(190, 190, 190)),
+            }) end
+            b.TextColor3 = Color3.fromRGB(12, 12, 16)
+            if st then st.Color = Color3.fromRGB(255, 255, 255); st.Thickness = 2; st.Transparency = 0 end
+        else
+            if g then g.Color = MOB_GRAD end
+            b.TextColor3 = Color3.fromRGB(235, 235, 235)
+            if st then st.Color = ROW_BORDER; st.Thickness = 1; st.Transparency = 0.45 end
+        end
+    end
+
     local tabs = {"Combat", "Speed", "Visual", "Settings", "Keybinds"}
     tabButtons = {}
     contentPages = {}
@@ -8175,8 +8269,8 @@ function buildGui()
     for i, name in ipairs(tabs) do
         local btn = Instance.new("TextButton", tabBar)
         btn.Size = UDim2.new(0.19, 0, 1, -6)
-        btn.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-        btn.BackgroundTransparency = 0.35
+        btn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        btn.BackgroundTransparency = 0.05
         btn.BorderSizePixel = 0
         btn.Text = name
         btn.TextColor3 = TAB_INACT
@@ -8184,7 +8278,8 @@ function buildGui()
         btn.TextSize = 12
         btn.AutoButtonColor = false
         btn.ZIndex = 11
-        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 12)
+        local tg = Instance.new("UIGradient", btn); tg.Rotation = 90; tg.Color = MOB_GRAD
         local stroke = Instance.new("UIStroke", btn)
         stroke.Color = ROW_BORDER
         stroke.Thickness = 1
@@ -8222,27 +8317,14 @@ function buildGui()
         btn.MouseButton1Click:Connect(function()
             for _, pg in pairs(contentPages) do pg.Visible = false end
             page.Visible = true
-            for _, b in ipairs(tabButtons) do
-                b.TextColor3 = TAB_INACT
-                b.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-                local st = b:FindFirstChildOfClass("UIStroke")
-                if st then st.Color = ROW_BORDER; st.Thickness = 1 end
-            end
-            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            btn.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
-            local ast = btn:FindFirstChildOfClass("UIStroke")
-            if ast then ast.Color = WHITE; ast.Thickness = 1.5 end
+            for _, b in ipairs(tabButtons) do paintTab(b, false) end
+            paintTab(btn, true)
         end)
 
         table.insert(tabButtons, btn)
     end
 
-    if tabButtons[1] then
-        tabButtons[1].TextColor3 = Color3.fromRGB(255, 255, 255)
-        tabButtons[1].BackgroundColor3 = Color3.fromRGB(31, 31, 31)
-        local ast1 = tabButtons[1]:FindFirstChildOfClass("UIStroke")
-        if ast1 then ast1.Color = WHITE; ast1.Thickness = 1.5 end
-    end
+    for _, b in ipairs(tabButtons) do paintTab(b, b == tabButtons[1]) end
 
     local pageCounters = {}
 
@@ -8278,27 +8360,37 @@ function buildGui()
         line.BackgroundTransparency = 0.6
         line.BorderSizePixel = 0
         line.ZIndex = 8
+        local sa = Instance.new("Frame", f)
+        sa.Size = UDim2.new(0, 34, 0, 3)
+        sa.Position = UDim2.new(0, 12, 1, -5)
+        sa.BackgroundColor3 = getThemeColor()
+        sa.BorderSizePixel = 0
+        sa.ZIndex = 9
+        Instance.new("UICorner", sa).CornerRadius = UDim.new(1, 0)
         return f
     end
 
     local function mkRow(page, h)
         local f = Instance.new("Frame", page)
         f.Size = UDim2.new(1, -4, 0, h or 38)
-        f.BackgroundColor3 = ROW_BG
-        f.BackgroundTransparency = 0.5
+        f.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        f.BackgroundTransparency = 0.12
         f.BorderSizePixel = 0
         f.LayoutOrder = getNextOrder(page)
         f.ZIndex = 7
-        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 12)
+        Instance.new("UICorner", f).CornerRadius = UDim.new(0, 14)
+        local rg = Instance.new("UIGradient", f)
+        rg.Rotation = 90
+        rg.Color = MOB_GRAD
         local rowStroke = Instance.new("UIStroke", f)
         rowStroke.Color = ROW_BORDER
         rowStroke.Thickness = 1
-        rowStroke.Transparency = 0.5
+        rowStroke.Transparency = 0.45
         f.MouseEnter:Connect(function()
-            TS:Create(f, TweenInfo.new(0.1), {BackgroundColor3 = Color3.fromRGB(28,28,28)}):Play()
+            TS:Create(rowStroke, TweenInfo.new(0.12), {Color = Color3.fromRGB(221, 221, 221), Transparency = 0.1}):Play()
         end)
         f.MouseLeave:Connect(function()
-            TS:Create(f, TweenInfo.new(0.1), {BackgroundColor3 = ROW_BG}):Play()
+            TS:Create(rowStroke, TweenInfo.new(0.12), {Color = ROW_BORDER, Transparency = 0.45}):Play()
         end)
         return f
     end
@@ -8961,6 +9053,18 @@ function buildGui()
         end)
     end
 
+    mkSect(speedPage, "Spin")
+    ShoxSpinSetVisual = mkToggle(speedPage, "Spin Clockwise", function(on)
+        ShoxSpinSet(on)
+    end)
+    do
+        local row = mkRow(speedPage, 38)
+        mkLabel(row, "Spin Speed")
+        mkBox(row, ShoxSpinRadPerSec, 50, 56, function(v)
+            if v > 0 and v <= 100 then ShoxSpinRadPerSec = v end
+        end)
+    end
+
     local combatPage = contentPages["Combat"]
 
     mkSect(combatPage, "Bat Aimbot")
@@ -9147,6 +9251,15 @@ function buildGui()
     local visualPage = contentPages["Visual"]
 
     mkSect(visualPage, "Interface")
+    setEditModeVisual = mkToggle(visualPage, "Edit Button", function(on)
+        toggleEditMode(on)
+        if on and uiLocked then
+            editModeEnabled = false
+            setEditModeVisual(false)
+        end
+    end)
+    if setEditModeVisual then setEditModeVisual(editModeEnabled) end
+
     setLockUIVisual = mkToggle(visualPage, "Lock UI", function(on)
         toggleLockUI(on)
         if on and editModeEnabled then
@@ -9288,6 +9401,114 @@ function buildGui()
                 end
             end
         end)
+    end
+
+    do
+        local row = mkRow(visualPage, 56)
+        mkLabel(row, "Background")
+
+        local previewFrame = Instance.new("Frame", row)
+        previewFrame.Name = "BackgroundPreview"
+        previewFrame.Size = UDim2.new(0, 56, 0, 44)
+        previewFrame.Position = UDim2.new(1, -250, 0.5, -22)
+        previewFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 12)
+        previewFrame.BackgroundTransparency = 0.15
+        previewFrame.BorderSizePixel = 0
+        previewFrame.ClipsDescendants = true
+        previewFrame.ZIndex = 8
+        Instance.new("UICorner", previewFrame).CornerRadius = UDim.new(0, 8)
+
+        local previewStroke = Instance.new("UIStroke", previewFrame)
+        previewStroke.Color = ROW_BORDER
+        previewStroke.Thickness = 1.2
+        previewStroke.Transparency = 0.35
+
+        local previewImage = Instance.new("ImageLabel", previewFrame)
+        previewImage.Name = "PreviewImage"
+        previewImage.Size = UDim2.new(1, 0, 1, 0)
+        previewImage.Position = UDim2.new(0, 0, 0, 0)
+        previewImage.BackgroundTransparency = 1
+        previewImage.Image = ""
+        previewImage.ScaleType = Enum.ScaleType.Crop
+        previewImage.ZIndex = 9
+        Instance.new("UICorner", previewImage).CornerRadius = UDim.new(0, 8)
+
+        local previewPlaceholder = Instance.new("TextLabel", previewFrame)
+        previewPlaceholder.Name = "PreviewPlaceholder"
+        previewPlaceholder.Size = UDim2.new(1, 0, 1, 0)
+        previewPlaceholder.BackgroundTransparency = 1
+        previewPlaceholder.Text = "OFF"
+        previewPlaceholder.TextColor3 = Color3.fromRGB(160, 160, 170)
+        previewPlaceholder.Font = Enum.Font.GothamBlack
+        previewPlaceholder.TextSize = 12
+        previewPlaceholder.ZIndex = 10
+
+        local function updateBackgroundPreview(idx)
+            local cfg = BACKGROUND_IMAGES[idx]
+            if not cfg or not cfg.id or cfg.id == "" then
+                previewImage.Image = ""
+                previewPlaceholder.Visible = true
+                previewStroke.Color = ROW_BORDER
+            else
+                previewImage.Image = cfg.id
+                previewPlaceholder.Visible = false
+                previewStroke.Color = getThemeColor()
+            end
+        end
+
+        local function animatePreview()
+            previewFrame.Size = UDim2.new(0, 56, 0, 44)
+            TS:Create(previewFrame, TweenInfo.new(0.15, Enum.EasingStyle.Back), {
+                Size = UDim2.new(0, 60, 0, 47),
+            }):Play()
+            task.delay(0.15, function()
+                TS:Create(previewFrame, TweenInfo.new(0.15), {
+                    Size = UDim2.new(0, 56, 0, 44),
+                }):Play()
+            end)
+        end
+
+        previewFrame.MouseEnter:Connect(function()
+            TS:Create(previewStroke, TweenInfo.new(0.12), {
+                Color = getThemeColor(),
+                Transparency = 0.05,
+            }):Play()
+        end)
+        previewFrame.MouseLeave:Connect(function()
+            local cfg = BACKGROUND_IMAGES[backgroundIndex]
+            local isOff = (not cfg) or (not cfg.id) or (cfg.id == "")
+            TS:Create(previewStroke, TweenInfo.new(0.12), {
+                Color = isOff and ROW_BORDER or getThemeColor(),
+                Transparency = isOff and 0.35 or 0.2,
+            }):Play()
+        end)
+
+        local options = {}
+        for _, bg in ipairs(BACKGROUND_IMAGES) do
+            table.insert(options, bg.label)
+        end
+
+        backgroundSelectorLabel = mkNeoSelector(row, BACKGROUND_IMAGES[backgroundIndex].label, options, function(selected)
+            for i, bg in ipairs(BACKGROUND_IMAGES) do
+                if bg.label == selected then
+                    applyBackground(i)
+                    updateBackgroundPreview(i)
+                    animatePreview()
+                    saveAllSettings()
+                    break
+                end
+            end
+        end)
+
+        if backgroundSelectorLabel then
+            local selContainer = backgroundSelectorLabel.Parent
+            if selContainer and selContainer:IsA("Frame") then
+                selContainer.Size = UDim2.new(0, 175, 0, 30)
+                selContainer.Position = UDim2.new(1, -183, 0.5, -15)
+            end
+        end
+
+        updateBackgroundPreview(backgroundIndex)
     end
 
     local configPage = contentPages["Settings"]
