@@ -5,7 +5,7 @@ if ShoxHubState.Running or _G.BloodHoundsRunning then
     return
 end
 ShoxHubState.Running = true
-ShoxHubState.Version     = "v1.9.9"
+ShoxHubState.Version     = "v1.9.11"
 ShoxHubState.Connections = ShoxHubState.Connections or {}
 ShoxHubState.Timers      = ShoxHubState.Timers      or {}
 
@@ -2829,7 +2829,7 @@ dTzFvI6LUpZhNGA7dJJBBURFj+iruHD5JJIIHDionjikkgko5nQzXabEq/URTS4YXzscHts5pcN2nY/m
 ]==]
 }
 ShoxBgCache = {}
-ShoxBgImgs = setmetatable({}, {__mode = "k"})
+ShoxBgImgs = {} -- v1.9.11: stark (vorher weak -> Roblox leerte die Liste, nur Buttons mit paintFloatingBtn zogen nach)
 
 function ShoxB64Decode(str)
     str = str:gsub("%s", "")
@@ -2924,6 +2924,7 @@ function ShoxBgAttach(frame, radius, z)
     Instance.new("UICorner", img).CornerRadius = UDim.new(0, radius or 0)
     img.Parent = frame
     ShoxBgImgs[img] = true
+    pcall(function() game:GetService("CollectionService"):AddTag(img, "ShoxBgImg") end)
     ShoxBgTune(img)
     return img
 end
@@ -2932,9 +2933,19 @@ function applyBackground(index)
     backgroundIndex = _clamp(index or 1, 1, #BACKGROUND_IMAGES)
     local cfg = BACKGROUND_IMAGES[backgroundIndex]
     if not cfg then return end
-    for img in pairs(ShoxBgImgs) do
-        if img.Parent then ShoxBgTune(img) else ShoxBgImgs[img] = nil end
+    -- v1.9.11: ALLE Bilder sofort (Hauptfenster, Auto-Steal-Leiste, Mobile-Buttons, Insta-Reset): Registry + Tag-Suche
+    local seen = {}
+    local function tuneOne(img)
+        if not img or seen[img] then return end
+        seen[img] = true
+        if img.Parent then pcall(ShoxBgTune, img) else ShoxBgImgs[img] = nil end
     end
+    for img in pairs(ShoxBgImgs) do tuneOne(img) end
+    pcall(function()
+        for _, img in ipairs(game:GetService("CollectionService"):GetTagged("ShoxBgImg")) do
+            if img:IsA("ImageLabel") then tuneOne(img) end
+        end
+    end)
     if backgroundSelectorLabel then
         backgroundSelectorLabel.Text = cfg.label
     end
@@ -3966,7 +3977,6 @@ end
 
 local function executeSteal(prompt, podName)
     if isStealing then return end
-    if os.clock() < (ShoxStealBlockUntil or 0) then return end -- kurze Sperre nach sauberem Abbruch (kein paralleler Steal)
     if type(Steal.Data) == "table" then
         pcall(function()
             local mt = getmetatable(Steal.Data) or {}
@@ -4278,14 +4288,6 @@ AP = {
     R1 = _V3new(-476.16, -6.52, 25.62),
     R2 = _V3new(-483.06, -5.03, 25.48),
     R_FACE = _V3new(-482.06, -6.93, 35.47),
-    -- v1.9.9: Rueckweg-Punkte aus antisammy_source.txt (AP_L3/L4, AP_R3/R4)
-    L3 = _V3new(-476.12, -6.59, 92.24),
-    L4 = _V3new(-467.23, -6.99, 22.54),
-    -- v1.9.10: R3/R4 = Spiegelbild von L3/L4 an der Map-Mitte (z = 59.175, aus L1/R1) -> Right laeuft wie Left
-    R3 = _V3new(-476.12, -6.59, 26.11),
-    R4 = _V3new(-467.23, -6.99, 95.81),
-    R3_OLD = _V3new(-476.58, -6.49, 28.32), -- alter Weg: _G.ShoxAPRightOld = true
-    R4_OLD = _V3new(-468.26, -6.99, 97.54),
 }
 
 function isGamepadInput(inp)
@@ -4523,15 +4525,13 @@ function _G.AmbitiousSafeModeForceStop(reason)
     local stopped = false
     if autoBatEnabled and disableAutoBat then disableAutoBat(); stopped = true end
     if batDesyncTpEnabled and stopBatDesyncTp then stopBatDesyncTp(); stopped = true end
-    -- v1.9.5: Safe Mode soll nur Kicks verhindern. Auto L/R Full (Hin- und Rueckweg mit Brainrot) nicht abbrechen.
-    local keepAP = (reason == "SAFE MODE LOCK") and (ShoxAutoFull == true or ShoxAPFullActive == true)
-    if autoLeftEnabled and not keepAP then
+    if autoLeftEnabled then
         autoLeftEnabled = false
         if autoLeftSetVisual then autoLeftSetVisual(false) end
         stopAutoLeft()
         stopped = true
     end
-    if autoRightEnabled and not keepAP then
+    if autoRightEnabled then
         autoRightEnabled = false
         if autoRightSetVisual then autoRightSetVisual(false) end
         stopAutoRight()
@@ -5400,14 +5400,8 @@ end
 
 -- v1.9.2: Carry-Latch. Nach dem Steal-Fire gilt "Brainrot getragen" feste Zeit, egal was die geratene Erkennung sagt.
 ShoxCarryLatchUntil = 0
-ShoxAPFullActive = false
-ShoxAPCapUntil = 0
 function ShoxCarryLatch(secs) ShoxCarryLatchUntil = os.clock() + (tonumber(secs) or 14) end
 function ShoxCarryLatched() return os.clock() < ShoxCarryLatchUntil end
--- v1.9.3: Full-Rueckweg: harte Obergrenze 30 (oder dein Carry-Speed, falls kleiner), unabhaengig von der Carry-Erkennung
-function ShoxAPReturnCap()
-    return math.min(30, math.max(tonumber(CarrySystem and CarrySystem.carrySpeed) or 30, 1))
-end
 
 -- v1.9.2: Debug: _G.ShoxCarryDebug = true -> beim Steal werden Attribute/Kinder vorher/nachher verglichen (warn)
 function ShoxCarrySnap()
@@ -5781,46 +5775,6 @@ function toggleLaggerCycle()
     resetMovementState()
 end
 
-local function applyAutoPathVelocity(root, direction, requestedSpeed, dt)
-    if not root or not root.Parent then return end
-    if tick() < _globalMovementLock then return end
-    local flat = _V3new(direction.X, 0, direction.Z)
-    if flat.Magnitude < 0.001 then return end
-
-    -- Follow the configured normal speed (NS=60); the previous hard 30 cap
-    -- silently halved Auto Left/Right speed even when Lagger mode was disabled.
-    local normalCap = math.max(tonumber(NS) or 60, 1)
-    local speed = math.clamp(tonumber(requestedSpeed) or normalCap, 1, normalCap)
-    local carryCap = math.max(tonumber(CarrySystem.carrySpeed) or 30, 1)
-    if (ShoxIsCarrying and ShoxIsCarrying())
-       or (ShoxAPFullActive and ShoxCarryLatched and ShoxCarryLatched())
-       or os.clock() < (ShoxAPCapUntil or 0) then
-        speed = math.min(speed, carryCap)
-    end
-    if ShoxAPFullActive then speed = math.min(speed, ShoxAPReturnCap()) end
-    local current = root.AssemblyLinearVelocity
-    local desiredX = flat.Unit.X * speed
-    local desiredZ = flat.Unit.Z * speed
-    local safeDt = math.clamp(tonumber(dt) or (1 / 60), 1 / 240, 0.1)
-    local alpha = 1 - math.exp(-safeDt * 24)
-
-    local targetVel = _V3new(desiredX, 0, desiredZ)
-    -- v1.9.4-fix: Bei Richtungswechsel sofort neue Richtung (kein Rueckwaerts-Lerp -> kein Pendeln)
-    local curFlat = _V3new(current.X, 0, current.Z)
-    local smoothed
-    if curFlat:Dot(targetVel) < 0 then
-        smoothed = targetVel
-    else
-        smoothed = curFlat:Lerp(targetVel, alpha)
-        if smoothed.Magnitude > 0.001 then
-            smoothed = smoothed.Unit * speed
-        else
-            smoothed = targetVel
-        end
-    end
-    root.AssemblyLinearVelocity = _V3new(smoothed.X, current.Y, smoothed.Z)
-end
-
 -- v1.8.0: Wegpunkt-Check ohne Verfehlen (bei 60 Studs/s und 30 FPS sind es 2 Studs pro Frame; "< 1" wurde oft uebersprungen)
 ShoxAPDist = {}
 function ShoxAPReached(key, root, tgt, dt, spd)
@@ -5833,219 +5787,8 @@ function ShoxAPReached(key, root, tgt, dt, spd)
     return false
 end
 
--- v1.9.2: FULL-Modus neu. Nach L2/R2 zurueck ueber L1/R1 zur Gegenseite.
--- Carry-Latch (Brainrot gilt nach dem Steal fest als getragen), weiches Abbremsen am letzten Wegpunkt,
--- Rubberband-Erkennung (Server-Rueckschlag > 8 Studs), Stuck-Erkennung nur mit Tempo und nicht am Ende.
-ShoxAutoFull = false
-function ShoxAPFullReturn(side)
-    local isL = side == "L"
-    local list
-    if _G.ShoxAPClassic then -- _G.ShoxAPClassic = true -> alter v1.9.8-Weg (zum Vergleichen)
-        list = isL and {AP.L1, AP.R1, AP.R2} or {AP.R1, AP.L1, AP.L2}
-    else
-        list = isL and {AP.L3, AP.L4} or (_G.ShoxAPRightOld and {AP.R3_OLD, AP.R4_OLD} or {AP.R3, AP.R4})
-    end
-    local face = isL and AP.R_FACE or AP.L_FACE
-    local idx, stuckN, lastPos, lastT, sideUntil, sideSign = 1, 0, nil, os.clock(), 0, 1
-    local startedAt = os.clock()
-    local framePos, framePrevDir = nil, nil
-    local syncUntil = nil
-    local tmpSteal = false
-    ShoxAPFullActive = true
-    ShoxCarryLatchUntil = 0
-    if Steal and not Steal.AutoStealEnabled then
-        tmpSteal = pcall(startAutoSteal)
-    end
-    table.clear(ShoxAPDist)
-    local conn
-    -- v1.9.6: Wand-Ausweichen (Raycast in Laufrichtung). Haengt der Weg an einer Wand, wird seitlich
-    -- ausgewichen statt gegen die Wand zu laufen.
-    local rayP = RaycastParams.new()
-    rayP.FilterType = Enum.RaycastFilterType.Exclude
-    rayP.IgnoreWater = true
-    local rayChar = nil
-    local steerUntil, steerAng = 0, 0
-    local function wallAhead(pos, dir, len)
-        for _, yo in ipairs({0, -2}) do
-            local h = workspace:Raycast(pos + _V3new(0, yo, 0), dir * len, rayP)
-            if h and h.Instance and h.Instance.CanCollide then
-                local m = h.Instance:FindFirstAncestorOfClass("Model")
-                if not (m and m:FindFirstChildOfClass("Humanoid")) then return true end
-            end
-        end
-        return false
-    end
-    local function rotY(v, ang)
-        local c, sn = math.cos(ang), math.sin(ang)
-        return _V3new(v.X * c - v.Z * sn, 0, v.X * sn + v.Z * c)
-    end
-    local function finish()
-        ShoxAPFullActive = false
-        if tmpSteal then pcall(stopAutoSteal) end
-        if isL then stopAutoLeft() else stopAutoRight() end
-        local ch = LP.Character
-        local rt = ch and ch:FindFirstChild("HumanoidRootPart")
-        if rt then
-            rt.AssemblyLinearVelocity = _V3new(0, rt.AssemblyLinearVelocity.Y, 0)
-            local fp = _V3new(face.X, rt.Position.Y, face.Z)
-            if (fp - rt.Position).Magnitude > 0.01 then rt.CFrame = _CFnew(rt.Position, fp) end
-        end
-    end
-    -- v1.9.8: Ist der direkte Weg zum ersten Wegpunkt blockiert (Wand), erst eine Pathfinding-Route raus aus der Base,
-    -- danach die normale Liste. Bei Fehler/kein Pfad bleibt alles wie vorher.
-    task.spawn(function()
-        local ch0 = LP.Character
-        local r0 = ch0 and ch0:FindFirstChild("HumanoidRootPart")
-        if not r0 then return end
-        rayP.FilterDescendantsInstances = {ch0}
-        local from, to = r0.Position, list[1]
-        local d0 = _V3new(to.X - from.X, 0, to.Z - from.Z)
-        if d0.Magnitude < 12 or not wallAhead(from, d0.Unit, math.min(d0.Magnitude, 40)) then return end
-        local ok, path = pcall(function()
-            local pth = game:GetService("PathfindingService"):CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true})
-            pth:ComputeAsync(from, to)
-            return pth
-        end)
-        if not ok or not path or path.Status ~= Enum.PathStatus.Success or idx ~= 1 then return end
-        local pts = path:GetWaypoints()
-        if #pts < 2 then return end
-        local nl = {}
-        for i = 2, #pts do nl[#nl + 1] = pts[i].Position end
-        for _, q in ipairs(list) do nl[#nl + 1] = q end
-        list = nl
-        idx = 1
-        table.clear(ShoxAPDist)
-    end)
-    conn = RunService.Heartbeat:Connect(function(dt)
-        if not (isL and autoLeftEnabled or (not isL) and autoRightEnabled) then
-            -- v1.9.5: Toggle aus -> Verbindung trennen statt jeden Frame nur zu returnen
-            ShoxAPFullActive = false
-            if tmpSteal then tmpSteal = false; pcall(stopAutoSteal) end
-            if conn then conn:Disconnect() end
-            if isL then if alConn == conn then alConn = nil end else if arConn == conn then arConn = nil end end
-            return
-        end
-        local now = os.clock()
-        local char = LP.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 or now - startedAt > 30 then finish(); return end
-        -- v1.9.5: Haengt der Steal nach 5s noch, sauber abbrechen: Worker beendet sich selbst (setzt data.ready),
-        -- ein neuer Steal wird kurz gesperrt, damit nie zwei Steals parallel laufen.
-        if isStealing and now - startedAt > 5 then
-            ShoxStealBlockUntil = now + 0.15
-            isStealing = false
-        end
-        -- v1.9.10: Steal-Sync. Laeuft der Steal noch, kurz stehen bleiben bis er ausgeloest ist (max. Restzeit + Ping),
-        -- dann sofort zurueck. Vorher ist man oft schon aus der Reichweite gelaufen -> Haenger/Rubberband.
-        if syncUntil == nil then
-            syncUntil = 0
-            if isStealing and not ShoxCarryLatched() then
-                syncUntil = now + math.min(1.2, (Steal.StealDuration or 1.3) * 0.35 + ShoxGetPingSec() * 2 + 0.1)
-            end
-        end
-        if now < syncUntil and isStealing and not ShoxCarryLatched() then
-            hum:Move(_V3zero, false)
-            root.AssemblyLinearVelocity = _V3new(0, root.AssemblyLinearVelocity.Y, 0)
-            return
-        end
-        local spd = math.min(math.max(0, tonumber(NS) or 0), ShoxAPReturnCap())
-        local lastP = list[#list]
-        local tgtP = list[idx]
-        local pos = root.Position
-        -- Rubberband: Position springt gegen die Laufrichtung zurueck -> kurz auf Carry-Tempo, neu ausrichten
-        if framePos and framePrevDir then
-            local back = _V3new(pos.X - framePos.X, 0, pos.Z - framePos.Z):Dot(framePrevDir)
-            if back < -8 then
-                ShoxAPCapUntil = now + 1.5
-                table.clear(ShoxAPDist)
-                lastPos = nil
-            end
-        end
-        local tg = _V3new(tgtP.X, pos.Y, tgtP.Z)
-        local flatD = _V3new(tgtP.X - pos.X, 0, tgtP.Z - pos.Z).Magnitude
-        local isLast = idx == #list
-        if ShoxAPReached("F" .. idx, root, tg, dt, spd) or (not isLast and flatD < 4) then
-            idx = idx + 1; stuckN = 0; lastPos = nil
-            if idx > #list then finish(); return end
-            tgtP = list[idx]
-            isLast = idx == #list
-            flatD = _V3new(tgtP.X - pos.X, 0, tgtP.Z - pos.Z).Magnitude
-        end
-        local d = tgtP - pos
-        local mv = _V3new(d.X, 0, d.Z)
-        mv = mv.Magnitude > 0.001 and mv.Unit or _V3zero
-        framePos, framePrevDir = pos, (mv.Magnitude > 0 and mv or framePrevDir)
-        -- am letzten Wegpunkt weich abbremsen (ab 12 Studs linear), kein Ueberschiessen
-        local useSpd = spd -- v1.9.4-fix: exakter Carry Speed bis zum Ziel, kein Abbremsen
-        -- Stuck: kaum Bewegung ueber 0.5s (nicht beim Steal-Hold, nicht kurz vorm Ziel)
-        if not lastPos then
-            lastPos, lastT = pos, now
-        elseif now - lastT >= 0.5 then
-            local moved = _V3new(lastPos.X - pos.X, 0, lastPos.Z - pos.Z).Magnitude
-            lastPos, lastT = pos, now
-            if moved < 3 and not isStealing and not (isLast and flatD < 14) and useSpd > 20 then
-                stuckN = stuckN + 1
-                if stuckN == 1 then
-                    hum.Jump = true
-                elseif stuckN == 2 then
-                    sideUntil = now + 0.45
-                    sideSign = -sideSign
-                else
-                    stuckN = 0
-                    idx = idx + 1
-                    if idx > #list then finish(); return end
-                end
-            else
-                stuckN = 0
-            end
-        end
-        if now < sideUntil and mv.Magnitude > 0 then
-            local perp = _V3new(-mv.Z, 0, mv.X) * sideSign
-            mv = (mv * 0.4 + perp).Unit
-        end
-        if mv.Magnitude > 0 and flatD > 6 and useSpd > 0 then
-            if rayChar ~= char then
-                rayChar = char
-                rayP.FilterDescendantsInstances = {char}
-            end
-            local probe = 5
-            if now < steerUntil then
-                local cand = rotY(mv, steerAng)
-                if not wallAhead(pos, cand, probe) then
-                    mv = cand
-                else
-                    steerUntil = 0
-                end
-            end
-            if now >= steerUntil and wallAhead(pos, mv, probe) then
-                -- zuerst die Seite, die naeher zum Ziel zeigt
-                local sgn = sideSign
-                for _, deg in ipairs({40, 75, 105}) do
-                    local found = false
-                    for _, sg in ipairs({sgn, -sgn}) do
-                        local ang = math.rad(deg) * sg
-                        local cand = rotY(mv, ang)
-                        if not wallAhead(pos, cand, probe) then
-                            steerAng, steerUntil = ang, now + 0.3
-                            mv = cand
-                            found = true
-                            break
-                        end
-                    end
-                    if found then break end
-                end
-            end
-        end
-        hum:Move(mv, false)
-        root.AssemblyLinearVelocity = _V3new(mv.X * useSpd, root.AssemblyLinearVelocity.Y, mv.Z * useSpd)
-    end)
-    if isL then alConn = conn else arConn = conn end
-end
-
 function stopAutoLeft()
     autoLeftEnabled = false
-    ShoxAPFullActive = false
     if alConn then alConn:Disconnect(); alConn = nil end
     alPhase = 1
     local char = LP.Character
@@ -6081,7 +5824,6 @@ function startAutoLeft()
     if alConn then alConn:Disconnect() end
     alPhase = 1
     ShoxCarryLatchUntil = 0
-    ShoxAPCapUntil = 0
     table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.L1 - (LP.Character and LP.Character:GetPivot().Position or AP.L1)).Magnitude + (AP.L2 - AP.L1).Magnitude
@@ -6122,12 +5864,6 @@ function startAutoLeft()
         elseif alPhase == 2 then
             local tgt = _V3new(AP.L2.X, root.Position.Y, AP.L2.Z)
             if ShoxAPReached("L2", root, tgt, dt, spd) then
-                if ShoxAutoFull then
-                    if alConn then alConn:Disconnect(); alConn = nil end
-                    alPhase = 1
-                    ShoxAPFullReturn("L")
-                    return
-                end
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -6154,7 +5890,6 @@ end
 
 function stopAutoRight()
     autoRightEnabled = false
-    ShoxAPFullActive = false
     if arConn then arConn:Disconnect(); arConn = nil end
     arPhase = 1
     local char = LP.Character
@@ -6190,7 +5925,6 @@ function startAutoRight()
     if arConn then arConn:Disconnect() end
     arPhase = 1
     ShoxCarryLatchUntil = 0
-    ShoxAPCapUntil = 0
     table.clear(ShoxAPDist)
     local startedAt = os.clock()
     local routeLength = (AP.R1 - (LP.Character and LP.Character:GetPivot().Position or AP.R1)).Magnitude + (AP.R2 - AP.R1).Magnitude
@@ -6231,12 +5965,6 @@ function startAutoRight()
         elseif arPhase == 2 then
             local tgt = _V3new(AP.R2.X, root.Position.Y, AP.R2.Z)
             if ShoxAPReached("R2", root, tgt, dt, spd) then
-                if ShoxAutoFull then
-                    if arConn then arConn:Disconnect(); arConn = nil end
-                    arPhase = 1
-                    ShoxAPFullReturn("R")
-                    return
-                end
                 hum:Move(_V3zero, false)
                 local currentVelocity = root.AssemblyLinearVelocity
                 root.AssemblyLinearVelocity = _V3new(0, currentVelocity.Y, 0)
@@ -7578,11 +7306,12 @@ function disableAntiLag()
     end
 end
 
--- v1.9.6: Anti Bat (Mix aus Clean V1/V2 + Orvyn + Anti-Ragdoll-Recovery). EINE Verbindung, kein Streit.
+-- v1.9.11: Anti Bat = Orvyn Anti Bat (Impuls-Kern 1:1) + Ragdoll-Recovery.
 ShoxAntiBatEnabled = false
 ShoxAntiBatConn = nil
 ShoxAntiBatRecConn = nil
 ShoxAntiBatBusy = false
+ShoxAntiBatBusyAt = 0
 ShoxAntiBatSetVisual = nil
 
 function ShoxAntiBatStop()
@@ -7593,22 +7322,22 @@ end
 
 function ShoxAntiBatStart()
     ShoxAntiBatStop()
-    -- Teil 1: Impuls (Clean V2 / Orvyn): X/Z kurz auf 1000, nach dem Frame wird dein echtes Tempo zurueckgesetzt.
+    -- Teil 1: Impuls wie Orvyn: X/Z auf 1000, nach RenderStepped wird dein echtes X/Z-Tempo zurueckgesetzt.
     -- Root wird jeden Frame neu geholt (laeuft nach Respawn weiter), Y bleibt unangetastet (Infinity Jump geht weiter).
+    -- Laeuft immer, auch bei Auto Left/Right. Busy verhindert nur, dass zwei Impulse ueberlappen (sonst bliebe 1000 stehen).
     ShoxAntiBatConn = RunService.Heartbeat:Connect(function()
-        if not ShoxAntiBatEnabled or ShoxAntiBatBusy then return end
-        -- bei Auto L/R pausieren, damit sich beide nicht in die Quere kommen
-        if autoLeftEnabled or autoRightEnabled or ShoxAPFullActive then return end
+        if not ShoxAntiBatEnabled then return end
+        if ShoxAntiBatBusy and os.clock() - ShoxAntiBatBusyAt < 0.25 then return end
         local char = LP.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
         if not root or not root.Parent then return end
         ShoxAntiBatBusy = true
-        local v = root.Velocity
-        root.Velocity = _V3new(1000, v.Y, 1000)
+        ShoxAntiBatBusyAt = os.clock()
+        local origXZ = _V3new(root.Velocity.X, 0, root.Velocity.Z)
+        root.Velocity = _V3new(1000, root.Velocity.Y, 1000)
         RunService.RenderStepped:Wait()
         if root and root.Parent then
-            local c = root.Velocity
-            root.Velocity = _V3new(v.X, c.Y, v.Z)
+            root.Velocity = _V3new(origXZ.X, root.Velocity.Y, origXZ.Z)
         end
         ShoxAntiBatBusy = false
     end)
@@ -8641,7 +8370,6 @@ function buildConfigTable()
         themeColor = currentColorTheme,
         useCarrySystem = useCarrySystem,
         autoStealVariant = autoStealVariant,
-        autoFull = ShoxAutoFull == true,
         carrySysNormal = CarrySystem.normalSpeed,
         carrySysCarry = CarrySystem.carrySpeed,
         carrySysLagger = CarrySystem.laggerSpeed,
@@ -9016,8 +8744,6 @@ function loadAllSettings()
     if autoStealVariantLabel then
         autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant)
     end
-    ShoxAutoFull = data.autoFull == true
-    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = ShoxAutoFull and "Full" or "Semi" end
     CarrySystem.normalSpeed = readNumber(data.carrySysNormal, NS, 1, 500)
     local savedBaseCarry = tonumber(data.carrySpeed)
     local savedSystemCarry = tonumber(data.carrySysCarry)
@@ -9138,8 +8864,6 @@ function forceResetUI()
     safeSet(mobSetLagger1, false)
     safeSet(mobSetLagger2, false)
     autoStealVariant = 1
-    ShoxAutoFull = false
-    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = "Semi" end
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(1) end
     bodyLockOffWhileCarry = true
     if bodyLockCarrySetVisual then bodyLockCarrySetVisual(true) end
@@ -9349,7 +9073,6 @@ function resetToFactoryDefaults()
         editModeEnabled = false
         CONFIG.AUTO_STEAL_ENABLED = false
         autoStealVariant = 1
-        ShoxAutoFull = false
         bodyLockOffWhileCarry = true
         autoAfterDrop = "Off"
         BAT_AIMBOT_SPEED = 60
@@ -10688,14 +10411,6 @@ function buildGui()
         if on then startAutoRight() else stopAutoRight() end
         if mobSetAutoRight then mobSetAutoRight(on) end
     end)
-    do
-        local row = mkRow(speedPage, 38)
-        mkLabel(row, "Auto L/R Mode")
-        ShoxAutoFullLabel = mkNeoSelector(row, ShoxAutoFull and "Full" or "Semi", {"Semi", "Full"}, function(sel)
-            ShoxAutoFull = (sel == "Full")
-            saveAllSettings()
-        end)
-    end
 
     mkSect(speedPage, "Teleport")
     do
@@ -12360,7 +12075,6 @@ function updateUIFromLoaded()
     if carrySysSoftStealRadiusBox then carrySysSoftStealRadiusBox.Text = tostring(CarrySystem.softStealRadius) end
     if carrySystemToggleSetter then carrySystemToggleSetter(useCarrySystem) end
     if autoStealVariantLabel then autoStealVariantLabel.Text = autoStealVariantName(autoStealVariant or 1) end
-    if ShoxAutoFullLabel then ShoxAutoFullLabel.Text = ShoxAutoFull and "Full" or "Semi" end
     -- v1.7.4: Schalter-Visuals mit geladenem Zustand synchronisieren
     if ShoxSetLockBtnsVisual then ShoxSetLockBtnsVisual(mobileButtonsLocked) end
     if ShoxHideMasterVisual then ShoxHideMasterVisual(_G.AmbitiousHideMobileButtons == true) end
@@ -12597,56 +12311,6 @@ RunService.Heartbeat:Connect(function()
        and tick() - ShoxHubAutoTPLastAt >= 0.35 then
         ShoxHubAutoTPLastAt = tick()
         doTpDown()
-    end
-end)
-
--- v1.9.5: Auto L/R Anti-Wall neu. Loest nur aus, wenn ich aktiv laufe (Tempo > 20, Bodenkontakt, kein Steal,
--- kein Carry-Latch) und trotzdem ueber 0.6s weniger als 3 Studs vorankomme. Dann 0.4s CanCollide aus (Teile gecacht).
-ShoxAPWallWatch = ShoxAPWallWatch or nil
-ShoxAPWallParts = nil
-RunService.Heartbeat:Connect(function()
-    if not (autoLeftEnabled or autoRightEnabled) then
-        ShoxAPWallWatch = nil
-        return
-    end
-    local wch = LP.Character
-    local wroot = wch and wch:FindFirstChild("HumanoidRootPart")
-    local whum = wch and wch:FindFirstChildOfClass("Humanoid")
-    if not wroot or not whum then ShoxAPWallWatch = nil; return end
-    local wnow = os.clock()
-    local wpos = wroot.Position
-    local wv = wroot.AssemblyLinearVelocity
-    local walking = whum.FloorMaterial ~= Enum.Material.Air
-        and _V3new(wv.X, 0, wv.Z).Magnitude > 20
-        and not isStealing
-        and not (ShoxCarryLatched and ShoxCarryLatched())
-    if not walking then
-        ShoxAPWallWatch = nil
-        return
-    end
-    if not ShoxAPWallWatch then
-        ShoxAPWallWatch = { pos = wpos, t = wnow }
-        return
-    end
-    if wnow - ShoxAPWallWatch.t >= 0.6 then
-        local wmoved = _V3new(wpos.X - ShoxAPWallWatch.pos.X, 0, wpos.Z - ShoxAPWallWatch.pos.Z).Magnitude
-        if false and wmoved < 3 and not ShoxAPWallParts then -- v1.9.8: No-Clip entfernt
-            local wparts = {}
-            for _, wp in ipairs(wch:GetChildren()) do
-                if wp:IsA("BasePart") and wp.CanCollide then
-                    wparts[#wparts + 1] = wp
-                    wp.CanCollide = false
-                end
-            end
-            ShoxAPWallParts = wparts
-            task.delay(0.4, function()
-                for _, wp in ipairs(wparts) do
-                    if wp and wp.Parent then wp.CanCollide = true end
-                end
-                ShoxAPWallParts = nil
-            end)
-        end
-        ShoxAPWallWatch = { pos = wpos, t = wnow }
     end
 end)
 
